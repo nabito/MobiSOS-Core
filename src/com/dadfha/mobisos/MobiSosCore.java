@@ -15,7 +15,7 @@ import com.hp.hpl.jena.tdb.TDBFactory;
 
 public class MobiSosCore {
 	
-	private static final String TDB_DIR = "MobiSosDB/MainDataset";
+	private static final String TDB_DIR = "/Users/Wirawit/dev/jena-fuseki-1.0.0/MobiSosTDB";
 	
 	//@prefix n: <http://dadfha.com/ns/node#> .
 	private static final String NS_MOBISOS = "http://www.dadfha.com/mobisos-rdf/1.0#";
@@ -29,8 +29,9 @@ public class MobiSosCore {
 	
 	
 	private final Dataset dataset = TDBFactory.createDataset(TDB_DIR);
-	private final Model model;
-		
+	private Model model;
+	
+	public final Property PROP_UUID;
 	public final Property PROP_HAS_CHECKIN;
 	public final Property PROP_VIA;
 	public final Property PROP_TIMESTAMP;
@@ -59,8 +60,24 @@ public class MobiSosCore {
 		// Init TDB (even if when already done before)				
 		dataset.begin(ReadWrite.WRITE);
 		model = dataset.getDefaultModel();
+		// IMP consider naming graph for better management/performance?
+		// dataset.addNamedModel(NS_MOBISOS + NS_PREFIX_MOBISOS, model);
 		model.setNsPrefix(NS_PREFIX_MOBISOS, NS_MOBISOS);
 		
+		/*
+		//model = ModelFactory.createDefaultModel();
+		Resource r = model.createResource(NS_MOBISOS + "root");
+		Property p1 = model.createProperty(NS_MOBISOS + "nama");
+		Property p2 = model.createProperty(NS_MOBISOS, "vaja");
+		model.add(r, p1, "arto");
+		model.add(r, p2, "Pairorrrr");
+		model.add(p1, RDFS.label, "The Nama");
+		model.add(p2, RDFS.label, "The Vaja");
+		//model.write(System.out, "Turtle");
+		 */
+		
+		// IMP consider adding rdfs:label and rdfs:comment for each of property
+		PROP_UUID = model.createProperty(NS_MOBISOS, "uuid");
 		PROP_HAS_CHECKIN = model.createProperty(NS_MOBISOS, "hasCheckin");
 		PROP_VIA = model.createProperty(NS_MOBISOS, "via");
 		PROP_TIMESTAMP = model.createProperty(NS_MOBISOS, "timestamp");
@@ -80,16 +97,20 @@ public class MobiSosCore {
 		PROP_LONG = model.createProperty(NS_MOBISOS, "longitude");		
 		PROP_SPEED = model.createProperty(NS_MOBISOS, "speed");
 		PROP_LOC_NAME = model.createProperty(NS_MOBISOS, "locationName");
+				
+		dataset.commit();
+		model.close();
+		dataset.end();
 		
-		dataset.end();		
 		
 	}
 	
 	
 	public void generateMashup() {
-		
+		// TODO map with tracking update in real-time, video always connect, latest status/info summary, archive log, near by user 
 	}
 	
+	// IMP look more into genUUID() mechanism
 	private String generateUUID() {
 		return UUID.randomUUID().toString();
 	}
@@ -97,21 +118,38 @@ public class MobiSosCore {
 	/**
 	 * This method is expected to be called from a mobile client to do self check-in
 	 * since Wifi router doesn't know about uid 
+	 * 
+	 * IMP password/API token must be accompany so any person has uuid won't be able to disguise check-in
+	 * 
 	 * @param uid user ID
-	 * @param location the check-in location in JSON. Structure follow that of Titanium3.x.
-	 * @param macAddr router's MAC address (BSSID)
+	 * @param location the check-in location in JSON. Structure follow that of Titanium3.x 
+	 * http://docs.appcelerator.com/titanium/latest/#!/api/LocationCoordinates
+	 * @param macAddr router's MAC address (BSSID) in Hexadecimal without ':'
+	 * @return true when success, false otherwise
 	 */
-	public void checkInAtWifi(String uid, String location, String macAddr) {		
+	public boolean checkInWifi(String uid, String location, String macAddr) {		
 
 		// This either create or connect to existing dataset		
 		dataset.begin(ReadWrite.WRITE);
+		model = dataset.getDefaultModel();
 		
-		// This will also get existing resource if already available
-		// IMP look more into genUUID() mechanism
+
+		
+		// Jena createResource() will also get existing resource if already available
 		// Note: ordered index is not used/generated here due to possible racing condition
 		// which could break the true order of event, rather we rely on SEQ collection order	
-		// FIXME Be warn that a new user can be created with this method, need prior checking!
+		
 		Resource user = model.createResource(NS_MOBISOS + RES_PREFIX_USER + uid);
+		
+		// Only allow authorized user to check-in
+		//if(!model.listResourcesWithProperty(PROP_UUID, uid).hasNext()) {
+		if(!model.contains(user, PROP_UUID, uid)) {
+			System.out.println("Trap!");
+			dataset.abort();
+			model.close();
+			dataset.end();			
+			return false;
+		}
 		
 		// Get check-in records (SEQ) of the user
 		Seq chkRecords = user.getProperty(PROP_HAS_CHECKIN).getSeq(); 
@@ -132,22 +170,26 @@ public class MobiSosCore {
 				.addLiteral(PROP_SPEED, geoLoc.getSpeed())
 				.addLiteral(PROP_LOC_NAME, ""); // IMP can we get location name from wifi check-in in the future?
 		
-		Resource checkin = model.createResource(NS_PREFIX_MOBISOS + RES_PREFIX_CHK + generateUUID())
+		Resource checkin = model.createResource(NS_MOBISOS + RES_PREFIX_CHK + generateUUID())
 				.addProperty(PROP_VIA, wifi)
 				.addLiteral(PROP_TIMESTAMP, System.currentTimeMillis())
 				.addProperty(PROP_GEO_LOC, locBnode);
 		
 		chkRecords.add(checkin);		
 		
+		dataset.commit();
+		model.close();
 		dataset.end();
+		
+		return true;
 
 	}
 	
 	/**
 	 * This method is expected to be called from a Wifi router to track near by/connected user
-	 * by sending user's MAC address to 
+	 * by sending user's MAC address to app server for resolution
 	 * @param devUUID user device's MAC address for Android and app's UUID for iOS >= 7 
-	 * @param macAddr Router's MAC address (BSSID) to get mapped location
+	 * @param macAddr Router's MAC address (BSSID) to get mapped location in Hexadecimal without ':'
 	 */
 	public void trackWifiUser(String devUUID, String macAddr) {
 		// TODO this is for when we have access to router fw
@@ -176,19 +218,30 @@ public class MobiSosCore {
 	
 	/**
 	 * Create a user based on email and password (the latter is not stored now)
+	 * 
+	 * IMP At the moment, having Class for a model is not a good idea.
+	 * Because the model structure, in other word graph, could change at 
+	 * anytime with introduction of new RDF node.    
+	 * 
 	 * @param email
 	 * @param passwd
 	 * @return
 	 */
-	public boolean createUser(String email, String passwd) {
-		boolean result = false;
-		// IMP include password someday soon?
+	public Resource createUser(String email, String passwd) {
+		// TODO include password someday soon?
+		dataset.begin(ReadWrite.WRITE);
+		model = dataset.getDefaultModel();
+		
 		String uid = generateUUID();
 		Resource user = model.createResource(NS_MOBISOS + RES_PREFIX_USER + uid)
 				.addProperty(PROP_HAS_CHECKIN, model.createSeq(NS_MOBISOS + RES_PREFIX_REC + uid))
-				.addProperty(FOAF.mbox, email);
+				.addProperty(FOAF.mbox, email)
+				.addProperty(PROP_UUID, uid);	
 		
-		return (user != null)? true:false;
+		dataset.commit();
+		model.close();
+		dataset.end();
+		return user;		
 	}
 	
 	public String getUserById(String uid) {
@@ -209,6 +262,9 @@ public class MobiSosCore {
 	 * , which could incur unnecessary processing and memory
 	 * CONS
 	 * not good for usage among Java programming
+	 * IMP should separate local methods and API's methods 
+	 * or consider using a Messaging Queue solution for RPC?
+	 * 
 	 * @param id
 	 * @param user
 	 * @return boolean indicating success/fail operation
@@ -234,6 +290,15 @@ public class MobiSosCore {
 		
 		// FIXME
 		return true;
+	}
+	public void dumpTDB() {
+		dataset.begin(ReadWrite.READ);
+		model = dataset.getDefaultModel();
+		
+		model.write(System.out, "Turtle");
+		
+		model.close();
+		dataset.end();
 	}
 	
 
