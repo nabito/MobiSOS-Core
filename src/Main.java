@@ -6,7 +6,7 @@ public class Main {
 
 	public static void main(String[] args) {
 		
-		MobiSosCore core = new MobiSosCore();
+		MobiSosCore core = new MobiSosCore();		
 		
 		Resource user = core.createUser("nabito@gmail.com", "mypwd");
 		String uid = user.getProperty(core.PROP_UUID).getString();
@@ -22,6 +22,7 @@ public class Main {
 		core.dumpTDB();
 		
 		System.out.println("Main class is intended for testing purpose only. Statements will be written to TDB and dump.");
+
 
 	}
 

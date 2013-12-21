@@ -77,6 +77,7 @@ public class MobiSosCore {
 		 */
 		
 		// IMP consider adding rdfs:label and rdfs:comment for each of property
+		// so it's become sentences and can be saved to TDB
 		PROP_UUID = model.createProperty(NS_MOBISOS, "uuid");
 		PROP_HAS_CHECKIN = model.createProperty(NS_MOBISOS, "hasCheckin");
 		PROP_VIA = model.createProperty(NS_MOBISOS, "via");
@@ -103,6 +104,19 @@ public class MobiSosCore {
 		dataset.end();
 		
 		
+	}
+	
+	public void sosCall(String uid, String location) {
+		// TODO update latest location to DB and start real-time tracking mode
+		//System.out.println("DUH?");
+		
+		boolean success = false;
+		
+		
+		if(!success) throw new RuntimeException("Can't complete sos call operation.");
+		
+		// query semantic DB for nearby nodes
+		// then ask for tracking record "Do you see Bob?"		
 	}
 	
 	
@@ -132,8 +146,6 @@ public class MobiSosCore {
 		// This either create or connect to existing dataset		
 		dataset.begin(ReadWrite.WRITE);
 		model = dataset.getDefaultModel();
-		
-
 		
 		// Jena createResource() will also get existing resource if already available
 		// Note: ordered index is not used/generated here due to possible racing condition
