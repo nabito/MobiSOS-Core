@@ -34,5 +34,10 @@
 			<artifactId>amqp-client</artifactId>
 			<version>3.2.1</version>
 		</dependency>
+		<dependency>
+			<groupId>org.apache.jena</groupId>
+			<artifactId>jena-fuseki</artifactId>
+			<version>1.0.0</version>
+		</dependency>
 	</dependencies>
 </project>

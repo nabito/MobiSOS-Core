@@ -2,7 +2,11 @@ package com.dadfha.mobisos;
 
 import java.util.UUID;
 
+import org.apache.jena.fuseki.Fuseki;
+import org.apache.jena.fuseki.FusekiCmd;
+
 import com.google.gson.Gson;
+import com.hp.hpl.jena.query.ARQ;
 import com.hp.hpl.jena.query.Dataset;
 import com.hp.hpl.jena.query.ReadWrite;
 import com.hp.hpl.jena.rdf.model.Model;
@@ -10,6 +14,7 @@ import com.hp.hpl.jena.rdf.model.Property;
 import com.hp.hpl.jena.rdf.model.Resource;
 import com.hp.hpl.jena.rdf.model.Seq;
 import com.hp.hpl.jena.sparql.vocabulary.FOAF;
+import com.hp.hpl.jena.tdb.TDB;
 import com.hp.hpl.jena.tdb.TDBFactory;
 
 
@@ -55,7 +60,27 @@ public class MobiSosCore {
 	
 	private static Gson gson = new Gson();
 			
-	public MobiSosCore() {		
+	public MobiSosCore() {
+				
+		new Thread(new Runnable(){
+			@Override
+			public void run() {
+				// Init the Fuseki
+		    	String[] args = new String[4];
+		    	args[0] = "--loc=/Users/Wirawit/dev/jena-fuseki-1.0.0/MobiSosTDB/";
+		    	args[1] = "--home=/Users/Wirawit/dev/jena-fuseki-1.0.0/";	
+		    	args[2] = "--update";	
+		    	args[3] = "/mobisos";		
+		    	
+		        // Just to make sure ...
+		        ARQ.init() ;
+		        TDB.init() ;
+		        Fuseki.init() ;
+		        new FusekiCmd(args).mainRun();				
+			}
+			
+		}).start();
+
 		
 		// Init TDB (even if when already done before)				
 		dataset.begin(ReadWrite.WRITE);
