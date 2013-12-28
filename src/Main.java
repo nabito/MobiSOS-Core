@@ -8,7 +8,7 @@ public class Main {
 
 	public static void main(String[] args) throws IOException {
 		
-		MobiSosCore core = new MobiSosCore();		
+		MobiSosCore core = new MobiSosCore();
 			
 		//Resource user = core.createUser("nabito@gmail.com", "mypwd");
 		//String uid = user.getProperty(MobiSosCore.PROP_UUID).getString();
@@ -23,9 +23,10 @@ public class Main {
 		
 		//core.addSamples();
 		
-		core.sosCall("3012201656413", titaLoc);
+		core.sosCall("a642d786-f44e-48fb-afe2-8e334466b5a3", "E347F181-A1E6-44EF-A2BA-C01A9A63291F", titaLoc);
 		
-		core.dumpTDB();
+		
+		//core.dumpTDB();
 		
 		
 		System.out.println("Main class is intended for testing purpose only. Statements will be written to TDB and dump.");

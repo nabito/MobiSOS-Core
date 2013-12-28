@@ -2,6 +2,8 @@ package com.dadfha.mobisos;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import org.apache.jena.atlas.lib.StrUtils;
@@ -12,21 +14,33 @@ import org.apache.jena.fuseki.FusekiCmd;
 import com.google.gson.Gson;
 import com.hp.hpl.jena.query.ARQ;
 import com.hp.hpl.jena.query.Dataset;
+import com.hp.hpl.jena.query.DatasetFactory;
 import com.hp.hpl.jena.query.Query;
 import com.hp.hpl.jena.query.QueryExecution;
 import com.hp.hpl.jena.query.QueryExecutionFactory;
 import com.hp.hpl.jena.query.QueryFactory;
+import com.hp.hpl.jena.query.QuerySolution;
 import com.hp.hpl.jena.query.ReadWrite;
+import com.hp.hpl.jena.query.ResultSet;
+import com.hp.hpl.jena.rdf.model.Bag;
+import com.hp.hpl.jena.rdf.model.Literal;
 import com.hp.hpl.jena.rdf.model.Model;
 import com.hp.hpl.jena.rdf.model.Property;
+import com.hp.hpl.jena.rdf.model.RDFNode;
+import com.hp.hpl.jena.rdf.model.ResIterator;
 import com.hp.hpl.jena.rdf.model.Resource;
 import com.hp.hpl.jena.rdf.model.ResourceFactory;
 import com.hp.hpl.jena.rdf.model.Seq;
+import com.hp.hpl.jena.rdf.model.SimpleSelector;
+import com.hp.hpl.jena.rdf.model.Statement;
 import com.hp.hpl.jena.sparql.util.QueryExecUtils;
 import com.hp.hpl.jena.sparql.vocabulary.FOAF;
 import com.hp.hpl.jena.tdb.TDB;
 import com.hp.hpl.jena.tdb.TDBFactory;
+import com.hp.hpl.jena.vocabulary.RDF;
 import com.hp.hpl.jena.vocabulary.RDFS;
+import com.hp.hpl.jena.vocabulary.XSD;
+import com.lambdaworks.crypto.SCryptUtil;
 
 import org.apache.jena.query.spatial.EntityDefinition;
 import org.apache.jena.query.spatial.SpatialDatasetFactory;
@@ -61,27 +75,47 @@ public class MobiSosCore {
 	private static final String URI_PREFIX_W3C_GEO = "geo";
 	private static final String URI_PREFIX_JENA_SPATIAL = "spatial";
 	
-	// Resource naming prefix
-	private static final String RES_PREFIX_USER = "user"; // for user	
-	private static final String RES_PREFIX_REC = "records"; // for records
-	private static final String RES_PREFIX_CHK = "chk"; // for check-in
-	private static final String RES_PREFIX_WIFI = "wifi"; // for wifi
+	// SPARQL query prefix
+	private static final String QUERY_PREFIX_MAIN = StrUtils.strjoinNL("PREFIX " + URI_PREFIX_BASE + ": <" + URI_BASE + ">",
+			"PREFIX " + URI_PREFIX_JENA_SPATIAL + ": <" + URI_JENA_SPATIAL + ">",
+			"PREFIX " + URI_PREFIX_RDFS + ": <"+ RDFS.getURI() +">");
+	
+	/*
+	String precheck = StrUtils.strjoinNL("PREFIX mbs: <http://www.dadfha.com/mobisos-rdf/1.0#>",
+			"PREFIX spatial: <http://jena.apache.org/spatial#>",
+			"PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>");		
+	
+	if(pre.equals(precheck)) System.out.println("Yay"); else System.out.println("Boo"); 
+	*/
 	
 	private Dataset dataset;
 	private Model model;
 	
-	//public static final Resource RES_XXX  = resource( "Xxx");	
+	public static final Resource RES_NODE  = resource("node");
+	public static final Resource RES_USER  = resource("user");
+	public static final Resource RES_CHK_REC  = resource("chk-record");
+	public static final Resource RES_DEV_BAG  = resource("dev-bag");
+	public static final Resource RES_DEV  = resource("dev");
+	public static final Resource RES_CHK  = resource("chk");
+	public static final Resource RES_WIFI  = resource("wifi");
+	public static final Resource RES_CAMERA  = resource("cam");
+	public static final Resource RES_UC_TAG  = resource("uctag");
+	public static final Resource RES_UBIX  = resource("ubix"); // The ubiquitous explorer 
 	
 	// IMP consider adding rdfs:label and rdfs:comment for each of property
 	// so it's become sentences and can be saved to TDB
 	public static final Property PROP_UUID = property("uuid");
+	public static final Property PROP_UDID = property("udid");
+	public static final Property PROP_AUTH_KEY = property("authKey");
 	public static final Property PROP_HAS_CHECKIN = property("hasCheckin");
+	public static final Property PROP_HAS_DEVICE = property("hasDevice");
 	public static final Property PROP_VIA = property("via");
 	public static final Property PROP_TIMESTAMP = property("timestamp");
 	public static final Property PROP_GEO_LOC = property("geolocation");
 	public static final Property PROP_UCODE = property("ucode");
 
 	public static final Property PROP_MAC_ADDR = property("macAddress");
+	public static final Property PROP_SSID = property("ssid");
 	public static final Property PROP_LAST_UPDATE = property("lastUpdate");
 	public static final Property PROP_LAST_SEEN = property("lastSeen");
 	public static final Property PROP_L10N_METHOD = property("l10nMethod");
@@ -96,8 +130,17 @@ public class MobiSosCore {
 	public static final Property PROP_SPEED = property("speed");
 	public static final Property PROP_LOC_NAME = property("locationName");
 	
-	public static final Property W3C_LAT = property(URI_W3C_GEO, "lat");
-	public static final Property W3C_LONG = property(URI_W3C_GEO, "long");
+	public static final Property PROP_W3C_LAT = property(URI_W3C_GEO, "lat");
+	public static final Property PROP_W3C_LONG = property(URI_W3C_GEO, "long");
+	
+	/**
+	 * Radius range to lookup for nodes in KiloMeter unit
+	 */
+	private static final double NODE_LOOKUP_RANGE = 100.0;
+	
+	private static final int SCRYPT_PARAM_N = 16384;
+	private static final int SCRYPT_PARAM_R = 8;
+	private static final int SCRYPT_PARAM_P = 1;
 	
 	private static final Gson gson = new Gson();
 	
@@ -114,7 +157,8 @@ public class MobiSosCore {
     { return ResourceFactory.createProperty( uri, local ); }	    
 		
 	public MobiSosCore() throws IOException {
-				
+		
+		
 		// Fuseki start-up
 		new Thread(new Runnable(){
 			@Override
@@ -135,29 +179,18 @@ public class MobiSosCore {
 			
 		}).start();
 		
-		dataset = initTDBDatasetWithLuceneSpatitalIndex(TDB_INDEX_DIR, TDB_DIR, true);
+		
+		dataset = initTDBDatasetWithLuceneSpatitalIndex(TDB_INDEX_DIR, TDB_DIR, false);
 
-		//loadData(geoDataset, "/Users/Wirawit/Desktop/geoarq-data-1.ttl");		
+		//loadData(dataset, "/Users/Wirawit/dev/jena-fuseki-1.0.0/geoarq-data-1.ttl");		
 		
 		// Init TDB (even if when already done before)				
 		dataset.begin(ReadWrite.WRITE);
 		model = dataset.getDefaultModel();
-		// IMP consider naming graph for better management/performance?
+		// IMP consider naming graph for better management/performance? at least sensor DB should get separated from app db
 		// dataset.addNamedModel(NS_MOBISOS + NS_PREFIX_MOBISOS, model);
 		model.setNsPrefix(URI_PREFIX_BASE, URI_BASE);
-		model.setNsPrefix(URI_PREFIX_W3C_GEO, URI_W3C_GEO);
-				
-		/*
-		//model = ModelFactory.createDefaultModel();
-		Resource r = model.createResource(NS_MOBISOS + "root");
-		Property p1 = model.createProperty(NS_MOBISOS + "nama");
-		Property p2 = model.createProperty(NS_MOBISOS, "vaja");
-		model.add(r, p1, "arto");
-		model.add(r, p2, "Pairorrrr");
-		model.add(p1, RDFS.label, "The Nama");
-		model.add(p2, RDFS.label, "The Vaja");
-		//model.write(System.out, "Turtle");
-		 */
+		model.setNsPrefix(URI_PREFIX_W3C_GEO, URI_W3C_GEO);				
 
 		model.close();		
 		dataset.commit();
@@ -166,22 +199,178 @@ public class MobiSosCore {
 		
 	}
 	
-	public void sosCall(String uid, String location) throws IOException {
+	public void sosCall(String uid, String udid, String location) throws IOException {
 		
 		System.out.println("SOS called on mobiSOS-Core");
 		
 		boolean success = true;
 		
-		// TODO update latest checkin to DB, and turn user's SOS flag on
+		// update latest checkin to DB
+		checkInGps(uid, udid, location);
 		
+		// TODO turn user's SOS flag on
 		
 		// query semantic DB for nearby nodes
-		queryData(dataset);
+		//queryData(dataset);		
+		//ArrayList<String> nodes = (ArrayList<String>) findNearbyNodes(uid, 1388033019876L, 1388033019876L);
+		ArrayList<String> nodes = (ArrayList<String>) findNearbyNodes(uid, NODE_LOOKUP_RANGE);
 		
-		if(!success) throw new RuntimeException("Can't complete sos call operation.");
+		if(!success) throw new RuntimeException("Error! Can't complete sos call operation.");
 		
 		
 		// then ask for tracking record "Do you see Bob?"		
+	}
+	
+	
+	private List<String> findNearbyNodes(String uid, double range) {
+		return findNearbyNodes(uid, range, 0L, 0L);
+	}
+	
+	/**
+	 * findNearbyNodes
+	 * @param uid user ID 
+	 * @param range the radius range in KM to look for near by nodes WRT each check-in location
+	 * @param since record lookup start time (time unit in milliseconds since midnight, January 1, 1970 UTC.) Value 0L will cause the function to ignore start time filter.
+	 * @param until record lookup end time (time unit in milliseconds since midnight, January 1, 1970 UTC.) Value 0L will cause the function to ignore stop time filter.
+	 * @return ArrayList<String> list of nearby nodes
+	 */
+	private List<String> findNearbyNodes(String uid, double range, long since, long until) {
+		ArrayList<String> nodeList = new ArrayList<String>();
+		 
+		class MyQueryResult {
+			RDFNode lati, longi, time, checkin;
+			MyQueryResult(RDFNode lati, RDFNode longi, RDFNode time, RDFNode checkin) {
+				this.lati = lati; this.longi = longi; this.time = time; this.checkin = checkin;
+			}
+		}
+		
+		ArrayList<MyQueryResult> objList = new ArrayList<MyQueryResult>();
+		
+		String sinceCond = "";
+		String untilCond = "";
+		String andCond = "";
+		String filter = "";
+		if(since != 0L) sinceCond = "?time >= " + since;
+		if(since != 0L) untilCond = "?time <= " + until;
+		if(since != 0L && until != 0L) andCond = " && ";
+		if(since != 0L || until != 0L) filter = " FILTER (" + sinceCond + andCond + untilCond + ")";
+		
+		String qs1 = StrUtils.strjoinNL("SELECT ?lat ?long ?checkin ?time", "WHERE",			
+				"{",
+				"<" + RES_USER.getURI() + "." + uid + "> <" + PROP_HAS_CHECKIN.getURI() + "> ?seq .",
+				"?seq ?ord ?checkin .",
+				"?checkin <" + PROP_GEO_LOC.getURI() + "> ?bn .",
+				"?checkin <" + PROP_TIMESTAMP.getURI() + "> ?time .",
+				"?bn <" + PROP_W3C_LAT.getURI() + "> ?lat .",
+				"?bn <" + PROP_W3C_LONG.getURI() + "> ?long .",
+//				"?bn2 spatial:withinCircle (?lat ?long " + range + " 'km') .", // this currently is not working due to Jena spatial bug/feature?
+				filter,
+				"}", 
+				"ORDER BY DESC(?time)"
+				);
+		
+		// First, query for check-ins
+		
+		dataset.begin(ReadWrite.READ);
+		long startTime = System.nanoTime();
+		Query q1 = null;
+		QueryExecution qexec1 = null;
+	
+		try {
+			
+			qs1 = QUERY_PREFIX_MAIN + "\n" + qs1;
+			q1 = QueryFactory.create(qs1);
+			
+			System.out.println(q1);
+			
+			qexec1 = QueryExecutionFactory.create(q1, dataset);
+		    ResultSet chkResults = qexec1.execSelect();
+
+		    for ( ; chkResults.hasNext() ; )
+		    {
+		      QuerySolution chkSoln = chkResults.nextSolution();
+		      RDFNode lati = chkSoln.get("lat");       // Get a result variable by name.
+		      RDFNode longi = chkSoln.get("long");
+		      RDFNode time = chkSoln.get("checkin");
+		      RDFNode checkin = chkSoln.get("time");
+		      //Resource r = soln.getResource("VarR") ; // Get a result variable - must be a resource
+		      //Literal l = soln.getLiteral("VarL") ;   // Get a result variable - must be a literal		      
+		      
+		      objList.add(new MyQueryResult(lati, longi, time, checkin));
+		      
+		      /*
+		      System.out.println(lati.toString());
+		      System.out.println(longi.toString());
+		      System.out.println(checkin.toString());
+		      System.out.println(time.toString());
+		      */
+		      
+		    } // end each check-in for
+		    
+		} finally {
+			if(qexec1 != null) qexec1.close();
+			dataset.end();
+		}
+		
+		long finishTime = System.nanoTime();
+		double time = (finishTime - startTime) / 1.0e6;
+		log.info(String.format("FINISH - %.2fms", time));
+		
+		// Second, query for nodes within circle!
+
+		dataset.begin(ReadWrite.READ);
+		startTime = System.nanoTime();
+		
+		Query q2 = null;
+		QueryExecution qexec2 = null;		
+		
+
+		try {
+			
+			for(MyQueryResult qr: objList) {
+				
+				System.out.println(qr.lati.toString());
+			    System.out.println(qr.longi.toString());
+			    System.out.println(qr.checkin.toString());
+			    System.out.println(qr.time.toString());	
+			      
+				// For each checkin-lat-long, query for near by node in db
+				String qs2 = StrUtils.strjoinNL("SELECT DISTINCT ?node", "WHERE", "{", 
+						"?node <" + PROP_GEO_LOC.getURI() + "> ?bn ;",
+						"a <" + RES_NODE.getURI() + "> .",
+						"?bn spatial:withinCircle (" + qr.lati.asLiteral().getFloat() + " " + qr.longi.asLiteral().getFloat() + " " + range + " 'km') .", 
+						"}");
+				
+				qs2 = QUERY_PREFIX_MAIN + "\n" + qs2;
+				System.out.println(qs2);
+				
+				q2 = QueryFactory.create(qs2);
+				
+				qexec2 = QueryExecutionFactory.create(q2, dataset);
+				ResultSet nodeResults = qexec2.execSelect();
+				//QueryExecUtils.executeQuery(q, qexec);
+
+				for (; nodeResults.hasNext();) {
+					QuerySolution nodeSoln = nodeResults.nextSolution();
+					RDFNode node = nodeSoln.get("node");
+					System.out.println(node.toString());
+
+					// add each node to array list
+					nodeList.add(node.toString());
+				} // end each node withinCircle for
+			
+			} // end for-each MyQueryResult
+
+		} finally {
+			if(qexec2 != null) qexec2.close();
+			dataset.end();
+		}
+		
+		finishTime = System.nanoTime();
+		time = (finishTime - startTime) / 1.0e6;
+		log.info(String.format("FINISH - %.2fms", time));		
+
+		return nodeList;
 	}
 	
 	
@@ -193,6 +382,10 @@ public class MobiSosCore {
 	private String generateUUID() {
 		return UUID.randomUUID().toString();
 	}
+	
+	private void checkInGps(String uid, String udid, String location) {
+		// TODO checkinGPS
+	}
 
 	/**
 	 * This method is expected to be called from a mobile client to do self check-in
@@ -200,13 +393,13 @@ public class MobiSosCore {
 	 * 
 	 * IMP password/API token must be accompany so any person has uuid won't be able to disguise check-in
 	 * 
-	 * @param uid user ID
+	 * @param uuid user ID
 	 * @param location the check-in location in JSON. Structure follow that of Titanium3.x 
 	 * http://docs.appcelerator.com/titanium/latest/#!/api/LocationCoordinates
 	 * @param macAddr router's MAC address (BSSID) in Hexadecimal without ':'
-	 * @return true when success, false otherwise
+	 * @throws Exception 
 	 */
-	public boolean checkInWifi(String uid, String location, String macAddr) {		
+	public void checkInWifi(String uuid, String location, String macAddr) throws Exception {		
 
 		// This either create or connect to existing dataset		
 		dataset.begin(ReadWrite.WRITE);
@@ -216,50 +409,99 @@ public class MobiSosCore {
 		// Note: ordered index is not used/generated here due to possible racing condition
 		// which could break the true order of event, rather we rely on SEQ collection order	
 		
-		Resource user = model.createResource(URI_BASE + RES_PREFIX_USER + uid);
+		Resource user = model.createResource(RES_USER.getURI() + "." + uuid);
 		
 		// Only allow authorized user to check-in
-		//if(!model.listResourcesWithProperty(PROP_UUID, uid).hasNext()) {
-		if(!model.contains(user, PROP_UUID, uid)) {
-			System.out.println("Trap!");
-			dataset.abort();
+		if(!model.contains(user, PROP_UUID, uuid)) {
+			log.warn("The Wifi Check-In is attemped by non-existing user!");
+			System.out.println("Wifi Check-in Security Trapped!");
 			model.close();
+			dataset.abort();
 			dataset.end();			
-			return false;
+			throw new Exception("Non-Authorized Wifi Check-In");
 		}
 		
 		// Get check-in records (SEQ) of the user
 		Seq chkRecords = user.getProperty(PROP_HAS_CHECKIN).getSeq(); 
 		if(chkRecords == null) throw new RuntimeException("Possibly Data Error! This user still has no check-in record yet!");
+
+		// Extract location's parameters from JSON
+		GeoLocation geoLoc = new GeoLocation(gson.fromJson(location, TitaniumLocation.class));		
+		// IMP can we get location name from wifi check-in in the future?
 		
 		// This will also create this wifi resource if not available before (Wardriving like)
-		Resource wifi = model.createResource(URI_BASE + RES_PREFIX_WIFI + macAddr);
-
-		// Extract location's parameters from JSON and put it in bnode
-		GeoLocation geoLoc = new GeoLocation(gson.fromJson(location, TitaniumLocation.class));
-		Resource locBnode = model.createResource();
-		locBnode.addLiteral(PROP_ACCU, geoLoc.getAccuracy())
-				.addLiteral(PROP_ALTI, geoLoc.getAltitude())
-				.addLiteral(PROP_ALTI_ACCU, geoLoc.getAltitudeAccuracy())
-				.addLiteral(PROP_HEADING, geoLoc.getHeading())
-				.addLiteral(PROP_LAT, geoLoc.getLatitude())
-				.addLiteral(PROP_LONG, geoLoc.getLongitude())
-				.addLiteral(PROP_SPEED, geoLoc.getSpeed())
-				.addLiteral(PROP_LOC_NAME, ""); // IMP can we get location name from wifi check-in in the future?
-		
-		Resource checkin = model.createResource(URI_BASE + RES_PREFIX_CHK + generateUUID())
+		Resource wifi = createWifiResource(model, macAddr, geoLoc);
+				
+		Resource checkin = model.createResource(RES_CHK.getURI() + "." + generateUUID())
 				.addProperty(PROP_VIA, wifi)
 				.addLiteral(PROP_TIMESTAMP, System.currentTimeMillis())
-				.addProperty(PROP_GEO_LOC, locBnode);
+				// IMP change to XSD date-time? but probably will lose precision of millisecond?				
+				//.addLiteral(XSD.dateTime, ) 
+				.addProperty(PROP_GEO_LOC, createLocBnode(model, geoLoc));
 		
 		chkRecords.add(checkin);		
 		
 		model.close();
 		dataset.commit();
 		dataset.end();
-		
-		return true;
 
+	}
+	
+	/**
+	 * Create a new Wifi resource or return existing one if already available in DB
+	 * IMP will include ssid in the future
+	 * Caution! This method must be called within a WRITE transaction. 
+	 * @param model
+	 * @param macAddr
+	 * @return Resource of wifi router
+	 */
+	private Resource createWifiResource(Model model, String macAddr, GeoLocation geoLoc) {
+		
+		Resource wifi = model.createResource(RES_WIFI.getURI() + "." + macAddr);
+		// check if this wifi router is already registered
+		if(model.contains(wifi, PROP_MAC_ADDR, macAddr)) {			
+			// if exists, just update wifi location as needed
+			Statement lastUpdateStm = wifi.getProperty(PROP_LAST_UPDATE);	
+			
+			if(lastUpdateStm.getLong() < System.currentTimeMillis()) {
+				lastUpdateStm.changeLiteralObject(System.currentTimeMillis());
+				// remove old statements about location and add new one				
+				model.remove(model.listStatements(
+						new SimpleSelector(wifi.getProperty(PROP_GEO_LOC).getResource(), null, (RDFNode) null)
+				));
+				model.remove(wifi.getProperty(PROP_GEO_LOC));
+				wifi.addProperty(PROP_GEO_LOC, createLocBnode(model, geoLoc));
+				//.addProperty(PROP_SSID, ssid)
+			}
+			
+		} else {
+			wifi.addProperty(PROP_MAC_ADDR, macAddr)
+			.addProperty(PROP_GEO_LOC, createLocBnode(model, geoLoc))
+			.addProperty(RDF.type, RES_NODE)
+			//.addProperty(PROP_SSID, ssid)
+			.addLiteral(PROP_LAST_UPDATE, System.currentTimeMillis());			
+		}
+		return wifi;
+	}
+	
+	/**
+	 * Create geo-location blank node 
+	 * Caution! This method must be called within a WRITE transaction.
+	 * @param model
+	 * @return
+	 */
+	private Resource createLocBnode(Model model, GeoLocation geoLoc) {		
+		Resource locBnode = model.createResource();
+		locBnode.addLiteral(PROP_ACCU, geoLoc.getAccuracy())
+				.addLiteral(PROP_ALTI, geoLoc.getAltitude())
+				.addLiteral(PROP_ALTI_ACCU, geoLoc.getAltitudeAccuracy())
+				.addLiteral(PROP_HEADING, geoLoc.getHeading())
+				// IMP may be source of error due to lost in precision double -> float
+				.addLiteral(PROP_W3C_LAT, (float) geoLoc.getLatitude())
+				.addLiteral(PROP_W3C_LONG, (float) geoLoc.getLongitude())
+				.addLiteral(PROP_SPEED, geoLoc.getSpeed())
+				.addLiteral(PROP_LOC_NAME, geoLoc.getLocationName()); 		
+		return locBnode;
 	}
 	
 	/**
@@ -298,27 +540,51 @@ public class MobiSosCore {
 	 * 
 	 * IMP At the moment, having Class for a model is not a good idea.
 	 * Because the model structure, in other word graph, could change at 
-	 * anytime with introduction of new RDF node.    
+	 * any time with introduction of new RDF node.    
 	 * 
 	 * @param email
 	 * @param passwd
-	 * @return String unique user id
+	 * @param udid Device's UDID
+	 * @return String Unique User ID (UUID) for new/existing user or null if authentication failed for existing user
 	 */
-	public String createUser(String email, String passwd) {
-		// TODO include password someday soon?
+	public String createUser(String email, String passwd, String udid) {
+		String uuid = null;
+		
 		dataset.begin(ReadWrite.WRITE);
 		model = dataset.getDefaultModel();
 		
-		String uid = generateUUID();
-		Resource user = model.createResource(URI_BASE + RES_PREFIX_USER + uid)
-				.addProperty(PROP_HAS_CHECKIN, model.createSeq(URI_BASE + RES_PREFIX_REC + uid))
-				.addProperty(FOAF.mbox, email)
-				.addProperty(PROP_UUID, uid);	
+		// check if user e-mail is already available in database, if yes, authenticate the password and return old user
+		ResIterator iter = model.listResourcesWithProperty(FOAF.mbox, email); 		
+		if(iter.hasNext()) {
+			
+			Resource user = iter.next();
+			String authKey = user.getProperty(PROP_AUTH_KEY).getString();						
+		    if(SCryptUtil.check(passwd, authKey) == true) uuid = user.getProperty(PROP_UUID).getString();
+		    
+		} else { // The user is not already available, let's create new one
+
+			uuid = generateUUID();
+			
+			Resource device = model.createResource(RES_DEV.getURI() + "." + udid, RES_NODE)
+					.addProperty(RDF.type, RES_NODE);
+						
+			Bag udidBag = model.createBag(RES_DEV_BAG.getURI() + "." + uuid);
+			udidBag.add(device);
+			
+			Resource user = model.createResource(RES_USER.getURI() + "." + uuid)
+					.addProperty(PROP_HAS_CHECKIN, model.createSeq(RES_CHK_REC.getURI() + "." + uuid))
+					.addProperty(PROP_HAS_DEVICE, udidBag)
+					.addProperty(FOAF.mbox, email)
+					.addProperty(PROP_UUID, uuid)
+					.addProperty(PROP_AUTH_KEY, SCryptUtil.scrypt(passwd, SCRYPT_PARAM_N, SCRYPT_PARAM_R, SCRYPT_PARAM_P));
+					// IMP should we add another level of salty-security over scrypt? if not, how do we separately store the salt?			
+		}
 		
 		model.close();
 		dataset.commit();
 		dataset.end();
-		return uid;		
+		
+		return uuid;		
 	}
 	
 	public String getUserById(String uid) {
@@ -379,13 +645,13 @@ public class MobiSosCore {
 	}
 	
 
-    private static Dataset initTDBDatasetWithLuceneSpatitalIndex(File indexDir, File TDBDir, boolean preserveTdbData) throws IOException{
+    private static Dataset initTDBDatasetWithLuceneSpatitalIndex(File indexDir, File TDBDir, boolean preserveOldData) throws IOException{
 		SpatialQuery.init();
-		deleteOldFiles(indexDir);
-		indexDir.mkdirs();
-		if(!preserveTdbData) {
+		if(!preserveOldData) {			
 			deleteOldFiles(TDBDir);
-			TDBDir.mkdir();			
+			TDBDir.mkdir();		
+			deleteOldFiles(indexDir);
+			indexDir.mkdirs();			
 		}
 		return createDatasetByCode(indexDir, TDBDir);
     }	
@@ -441,13 +707,12 @@ public class MobiSosCore {
 		EntityDefinition entDef = new EntityDefinition("entityField", "geoField");
 	
 		// set custom geo predicates
-		entDef.addSpatialPredicatePair(PROP_LAT, PROP_LONG);
-		entDef.addWKTPredicate(ResourceFactory.createResource("http://localhost/jena_example/#wkt_1"));
+		entDef.addSpatialPredicatePair(PROP_LAT, PROP_LONG);		
 		
 		// Lucene, index in File system.
 		Directory dir = FSDirectory.open(indexDir);
 
-		// Join together into a dataset
+		// Join together into a dataset (this does not re-index the base dataset)
 		Dataset ds = SpatialDatasetFactory.createLucene(baseDataset, dir, entDef);
 
 		return ds;
@@ -481,18 +746,8 @@ public class MobiSosCore {
 		long finishTime;
 		double time;
 		
-		String pre = StrUtils.strjoinNL("PREFIX " + URI_PREFIX_BASE + ": <" + URI_BASE + ">",
-				"PREFIX " + URI_PREFIX_JENA_SPATIAL + ": <" + URI_JENA_SPATIAL + ">",
-				"PREFIX " + URI_PREFIX_RDFS + ": <"+ RDFS.getURI() +">");
-		
-		/*
-		String precheck = StrUtils.strjoinNL("PREFIX mbs: <http://www.dadfha.com/mobisos-rdf/1.0#>",
-				"PREFIX spatial: <http://jena.apache.org/spatial#>",
-				"PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>");		
-		
-		if(pre.equals(precheck)) System.out.println("Yay"); else System.out.println("Boo"); 
-		*/
-		
+		String pre = QUERY_PREFIX_MAIN;
+
 		String qs = "";
 		
 		System.out.println("withinCircle");
@@ -532,6 +787,7 @@ public class MobiSosCore {
 		log.info(String.format("FINISH - %.2fms", time));		
 		
 		System.out.println("nearby");
+		startTime = System.nanoTime();
 		qs = StrUtils.strjoinNL("SELECT * ",
 				" { ?s spatial:nearby (51.3000 -2.71000 100.0 'miles') ;",
 				"      rdfs:label ?label", " }");
@@ -571,25 +827,30 @@ public class MobiSosCore {
 		
 		
 	}
-	/*
+	
 	public void addSamples() {
 		
 		// Init TDB (even if when already done before)				
 		dataset.begin(ReadWrite.WRITE);
-		model = dataset.getDefaultModel();
+		model = dataset.getDefaultModel();	
 				
 		//model = ModelFactory.createDefaultModel();
 		Resource r = model.createResource(URI_BASE + "tokyo");
 
-		model.addLiteral(r, W3C_LAT, 37.78583f);
-		model.addLiteral(r, W3C_LONG, -122.40641f);	
+		model.addLiteral(r, PROP_W3C_LAT, 37.78583f);
+		model.addLiteral(r, PROP_W3C_LONG, -122.40641f);
+		
+		Resource r2 = model.createResource(URI_BASE + "near.tokyo");
+
+		model.addLiteral(r2, PROP_LAT, 37.000);
+		model.addLiteral(r2, PROP_LONG, -122.000);			
 				
 		model.close();
 		dataset.commit();
 		dataset.end();
 	
 	}
-	*/
+	
 	
 
 }

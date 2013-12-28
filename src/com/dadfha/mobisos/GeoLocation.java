@@ -7,7 +7,7 @@ package com.dadfha.mobisos;
  */
 public class GeoLocation extends TitaniumLocation {
 	
-	private String locationName;
+	private String locationName = "";
 	
 	public GeoLocation() {
 		
