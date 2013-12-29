@@ -54,6 +54,16 @@ import org.slf4j.LoggerFactory;
 
 public class MobiSosCore {
 	
+	class NearByNodeResult {
+		public String checkin;
+		public double lat, lon;
+		public long time;
+		public List<String> nodeList;
+		NearByNodeResult(String checkin, double lat, double lon, long time, List<String> nodeList) {
+			this.lat = lat; this.lon = lon; this.time = time; this.checkin = checkin; this.nodeList = nodeList;
+		}
+	}	
+	
 	static {
 		Log.setLog4j();
 	}
@@ -72,20 +82,21 @@ public class MobiSosCore {
 	// Prefix must be a valid NCName - http://en.wikipedia.org/wiki/QName
 	private static final String URI_PREFIX_BASE = "mbs";
 	private static final String URI_PREFIX_RDFS = "rdfs";
+	private static final String URI_PREFIX_XSD = "xsd";
 	private static final String URI_PREFIX_W3C_GEO = "geo";
 	private static final String URI_PREFIX_JENA_SPATIAL = "spatial";
 	
 	// SPARQL query prefix
 	private static final String QUERY_PREFIX_MAIN = StrUtils.strjoinNL("PREFIX " + URI_PREFIX_BASE + ": <" + URI_BASE + ">",
 			"PREFIX " + URI_PREFIX_JENA_SPATIAL + ": <" + URI_JENA_SPATIAL + ">",
-			"PREFIX " + URI_PREFIX_RDFS + ": <"+ RDFS.getURI() +">");
+			"PREFIX " + URI_PREFIX_RDFS + ": <"+ RDFS.getURI() +">",
+			"PREFIX " + URI_PREFIX_XSD + ": <" + XSD.getURI() + ">"
+			);
 	
 	/*
-	String precheck = StrUtils.strjoinNL("PREFIX mbs: <http://www.dadfha.com/mobisos-rdf/1.0#>",
-			"PREFIX spatial: <http://jena.apache.org/spatial#>",
-			"PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>");		
-	
-	if(pre.equals(precheck)) System.out.println("Yay"); else System.out.println("Boo"); 
+	 * IMP make use of this native function to construct long string is more readable
+	String str = String.format("Action %s occured on object %s.",
+   		objectA.getAction(), objectB);
 	*/
 	
 	private Dataset dataset;
@@ -102,8 +113,6 @@ public class MobiSosCore {
 	public static final Resource RES_UC_TAG  = resource("uctag");
 	public static final Resource RES_UBIX  = resource("ubix"); // The ubiquitous explorer 
 	
-	// IMP consider adding rdfs:label and rdfs:comment for each of property
-	// so it's become sentences and can be saved to TDB
 	public static final Property PROP_UUID = property("uuid");
 	public static final Property PROP_UDID = property("udid");
 	public static final Property PROP_AUTH_KEY = property("authKey");
@@ -125,18 +134,18 @@ public class MobiSosCore {
 	public static final Property PROP_ALTI = property("altitude");
 	public static final Property PROP_ALTI_ACCU = property("altitudeAccuracy");
 	public static final Property PROP_HEADING = property("heading");
-	public static final Property PROP_LAT = property("latitude");
-	public static final Property PROP_LONG = property("longitude");	
+	public static final Property PROP_LAT = property("lat"); // radian unit
+	public static final Property PROP_LON = property("lon");
 	public static final Property PROP_SPEED = property("speed");
 	public static final Property PROP_LOC_NAME = property("locationName");
 	
-	public static final Property PROP_W3C_LAT = property(URI_W3C_GEO, "lat");
-	public static final Property PROP_W3C_LONG = property(URI_W3C_GEO, "long");
+	public static final Property PROP_W3C_LAT = property(URI_W3C_GEO, "lat"); // degree unit
+	public static final Property PROP_W3C_LON = property(URI_W3C_GEO, "long");
 	
 	/**
 	 * Radius range to lookup for nodes in KiloMeter unit
 	 */
-	private static final double NODE_LOOKUP_RANGE = 100.0;
+	private static final double NODE_LOOKUP_RANGE = 1.0;
 	
 	private static final int SCRYPT_PARAM_N = 16384;
 	private static final int SCRYPT_PARAM_R = 8;
@@ -187,6 +196,9 @@ public class MobiSosCore {
 		// Init TDB (even if when already done before)				
 		dataset.begin(ReadWrite.WRITE);
 		model = dataset.getDefaultModel();
+		// IMP consider adding rdfs:label and rdfs:comment for each of property also rdf:type rdf:Property is desirable 
+		// so it's become sentences and can be saved to TDB (also do the same with our defined resource)
+		
 		// IMP consider naming graph for better management/performance? at least sensor DB should get separated from app db
 		// dataset.addNamedModel(NS_MOBISOS + NS_PREFIX_MOBISOS, model);
 		model.setNsPrefix(URI_PREFIX_BASE, URI_BASE);
@@ -211,9 +223,16 @@ public class MobiSosCore {
 		// TODO turn user's SOS flag on
 		
 		// query semantic DB for nearby nodes
-		//queryData(dataset);		
-		//ArrayList<String> nodes = (ArrayList<String>) findNearbyNodes(uid, 1388033019876L, 1388033019876L);
-		ArrayList<String> nodes = (ArrayList<String>) findNearbyNodes(uid, NODE_LOOKUP_RANGE);
+		ArrayList<NearByNodeResult> res = (ArrayList<NearByNodeResult>) findNearbyNodes(uid, NODE_LOOKUP_RANGE);
+		
+		for(NearByNodeResult nbn: res) {
+			String s = String.format("%nCheckin: %s%n Lat: %s%n Lon: %s%n Time: %s%n", nbn.checkin, nbn.lat, nbn.lon, nbn.time);
+			System.out.println(s);
+			System.out.println(" Near by nodes:");
+			for(String node: nbn.nodeList) {
+				System.out.println("  " + node);
+			}
+		}
 		
 		if(!success) throw new RuntimeException("Error! Can't complete sos call operation.");
 		
@@ -222,9 +241,151 @@ public class MobiSosCore {
 	}
 	
 	
-	private List<String> findNearbyNodes(String uid, double range) {
-		return findNearbyNodes(uid, range, 0L, 0L);
+	private List<NearByNodeResult> findNearbyNodes(String uuid, double distance) {
+		return findNearbyNodes(uuid, distance, 0L, 0L);
 	}
+	
+	/**
+	 * findNearbyNodes using haversine formula + bounding coordinates technique
+	 * @param uuid
+	 * @param distance
+	 * @param since
+	 * @param until
+	 * @return List<NearByNodeResult> list of near-by-node finding result (NearBy
+	 */
+	private List<NearByNodeResult> findNearbyNodes(String uuid, double distance, long since, long until) {
+
+		ArrayList<NearByNodeResult> nbnList = new ArrayList<NearByNodeResult>();
+		
+		String sinceCond = "";
+		String untilCond = "";
+		String andCond = "";
+		String filter = "";
+		if(since != 0L) sinceCond = "?time >= " + since;
+		if(since != 0L) untilCond = "?time <= " + until;
+		if(since != 0L && until != 0L) andCond = " && ";
+		if(since != 0L || until != 0L) filter = " FILTER (" + sinceCond + andCond + untilCond + ")";
+		
+		String qs1 = StrUtils.strjoinNL("SELECT ?lat ?lon ?checkin ?time", "WHERE",			
+				"{",
+				"<%s.%s> <%s> ?seq .",
+				"?seq ?ord ?checkin .",
+				"?checkin <%s> ?bn .",
+				"?checkin <%s> ?time .",
+				"?bn <%s> ?lat .",
+				"?bn <%s> ?lon .",
+				filter,
+				"}", 
+				"ORDER BY DESC(?time)"
+				);		
+		
+		qs1 = String.format(qs1,
+				RES_USER.getURI(), uuid, PROP_HAS_CHECKIN.getURI(),
+				PROP_GEO_LOC.getURI(),
+				PROP_TIMESTAMP.getURI(),
+				PROP_LAT.getURI(),
+				PROP_LON.getURI()
+		   		);		
+		
+		// First, query for check-ins	
+		dataset.begin(ReadWrite.READ);
+		long startTime = System.nanoTime();
+		Query q1 = null;
+		QueryExecution qexec1 = null;
+		Query q2 = null;
+		QueryExecution qexec2 = null;	
+	
+		try {
+			
+			qs1 = QUERY_PREFIX_MAIN + System.lineSeparator() + qs1;
+			
+			System.out.println(System.lineSeparator() + qs1);
+			
+			q1 = QueryFactory.create(qs1);
+			qexec1 = QueryExecutionFactory.create(q1, dataset);
+		    ResultSet chkResults = qexec1.execSelect();
+
+			for (; chkResults.hasNext();) {
+				QuerySolution chkSoln = chkResults.nextSolution();
+				Literal lati = chkSoln.getLiteral("lat"); // Get a result variable by name.
+				Literal longi = chkSoln.getLiteral("lon");
+				Literal time = chkSoln.getLiteral("time");
+				Resource checkin = chkSoln.getResource("checkin");
+				
+				GeoLocation loc = GeoLocation.fromRadians(lati.getDouble(), longi.getDouble());
+				GeoLocation[] boundingCoordinates = loc.boundingCoordinates(distance, GeoLocation.R);
+				
+				boolean meridian180WithinDistance =
+						boundingCoordinates[0].getLongitudeInRadians() >
+						boundingCoordinates[1].getLongitudeInRadians();
+				
+				String boolConj = "&&";
+				if(meridian180WithinDistance) boolConj = "||"; 
+
+				// Second, for each checkin-lat-long, query for nodes within circle!
+				String qs2 = StrUtils.strjoinNL("SELECT DISTINCT ?node ?lat ?lon", "WHERE", "{", 
+							"?node <%s> ?bn ;",
+							"a <%s> .",
+							"?bn <%s> ?lat .",
+							"?bn <%s> ?lon .",
+							"FILTER ( (?lat >= %s && ?lat <= %s ) && (?lon >= %s %s ?lon <= %s) )",
+							"}");
+				
+				qs2 = String.format(qs2,
+						PROP_GEO_LOC.getURI(),
+						RES_NODE.getURI(),
+						PROP_LAT.getURI(),
+						PROP_LON.getURI(),
+						boundingCoordinates[0].getLatitudeInRadians(), boundingCoordinates[1].getLatitudeInRadians(), 
+						boundingCoordinates[0].getLongitudeInRadians(), boolConj, boundingCoordinates[1].getLongitudeInRadians()
+						);
+
+				qs2 = QUERY_PREFIX_MAIN + System.lineSeparator() + qs2;
+				System.out.println(System.lineSeparator() + qs2);
+
+				q2 = QueryFactory.create(qs2);
+
+				qexec2 = QueryExecutionFactory.create(q2, dataset);
+				ResultSet nodeResults = qexec2.execSelect();
+				//QueryExecUtils.executeQuery(q2, qexec2);
+				List<String> nodeList = new ArrayList<String>();
+
+				for (; nodeResults.hasNext();) {
+					QuerySolution nodeSoln = nodeResults.nextSolution();
+					Resource node = nodeSoln.getResource("node");
+					Literal nodeLat = nodeSoln.getLiteral("lat"); // Get a result variable by name.
+					Literal nodeLon = nodeSoln.getLiteral("lon");
+					
+					GeoLocation nodeLoc = GeoLocation.fromRadians(nodeLat.getDouble(), nodeLon.getDouble());
+					
+					// filter out the out of ring node
+					double disparity = GeoLocation.haversine(loc, nodeLoc);
+					
+					if(disparity <= distance) {
+						System.out.println(node.toString());
+						// add each node to array list
+						nodeList.add(node.toString());
+					}
+
+				} // end each node withinCircle for
+				
+				// add all nodes within circle to the result 
+				nbnList.add(new NearByNodeResult(checkin.getURI(), lati.getDouble(), longi.getDouble(), time.getLong(), nodeList));
+
+			} // end each check-in for
+		    
+		} finally {
+			if(qexec1 != null) qexec1.close();
+			if(qexec2 != null) qexec2.close();
+			dataset.end();
+		}
+		
+		long finishTime = System.nanoTime();
+		double time = (finishTime - startTime) / 1.0e6;
+		log.info(String.format("FINISH - %.2fms", time));
+		
+		return nbnList;
+	}	
 	
 	/**
 	 * findNearbyNodes
@@ -234,17 +395,19 @@ public class MobiSosCore {
 	 * @param until record lookup end time (time unit in milliseconds since midnight, January 1, 1970 UTC.) Value 0L will cause the function to ignore stop time filter.
 	 * @return ArrayList<String> list of nearby nodes
 	 */
-	private List<String> findNearbyNodes(String uid, double range, long since, long until) {
+	private List<String> findNearbyNodesOld(String uid, double range, long since, long until) {
 		ArrayList<String> nodeList = new ArrayList<String>();
-		 
+		
+		/*
+		 * temporary structured collection pattern
 		class MyQueryResult {
 			RDFNode lati, longi, time, checkin;
 			MyQueryResult(RDFNode lati, RDFNode longi, RDFNode time, RDFNode checkin) {
 				this.lati = lati; this.longi = longi; this.time = time; this.checkin = checkin;
 			}
 		}
-		
 		ArrayList<MyQueryResult> objList = new ArrayList<MyQueryResult>();
+		*/
 		
 		String sinceCond = "";
 		String untilCond = "";
@@ -261,94 +424,63 @@ public class MobiSosCore {
 				"?seq ?ord ?checkin .",
 				"?checkin <" + PROP_GEO_LOC.getURI() + "> ?bn .",
 				"?checkin <" + PROP_TIMESTAMP.getURI() + "> ?time .",
-				"?bn <" + PROP_W3C_LAT.getURI() + "> ?lat .",
-				"?bn <" + PROP_W3C_LONG.getURI() + "> ?long .",
+				"?bn <" + PROP_LAT.getURI() + "> ?lat .",
+				"?bn <" + PROP_LON.getURI() + "> ?long .",
 //				"?bn2 spatial:withinCircle (?lat ?long " + range + " 'km') .", // this currently is not working due to Jena spatial bug/feature?
 				filter,
 				"}", 
 				"ORDER BY DESC(?time)"
 				);
 		
-		// First, query for check-ins
-		
+		// First, query for check-ins	
 		dataset.begin(ReadWrite.READ);
 		long startTime = System.nanoTime();
 		Query q1 = null;
 		QueryExecution qexec1 = null;
+		Query q2 = null;
+		QueryExecution qexec2 = null;	
 	
 		try {
 			
-			qs1 = QUERY_PREFIX_MAIN + "\n" + qs1;
+			qs1 = QUERY_PREFIX_MAIN + System.lineSeparator() + qs1;
+			
+			System.out.println(qs1);
+			
 			q1 = QueryFactory.create(qs1);
-			
-			System.out.println(q1);
-			
 			qexec1 = QueryExecutionFactory.create(q1, dataset);
 		    ResultSet chkResults = qexec1.execSelect();
 
-		    for ( ; chkResults.hasNext() ; )
-		    {
-		      QuerySolution chkSoln = chkResults.nextSolution();
-		      RDFNode lati = chkSoln.get("lat");       // Get a result variable by name.
-		      RDFNode longi = chkSoln.get("long");
-		      RDFNode time = chkSoln.get("checkin");
-		      RDFNode checkin = chkSoln.get("time");
-		      //Resource r = soln.getResource("VarR") ; // Get a result variable - must be a resource
-		      //Literal l = soln.getLiteral("VarL") ;   // Get a result variable - must be a literal		      
-		      
-		      objList.add(new MyQueryResult(lati, longi, time, checkin));
-		      
-		      /*
-		      System.out.println(lati.toString());
-		      System.out.println(longi.toString());
-		      System.out.println(checkin.toString());
-		      System.out.println(time.toString());
-		      */
-		      
-		    } // end each check-in for
-		    
-		} finally {
-			if(qexec1 != null) qexec1.close();
-			dataset.end();
-		}
-		
-		long finishTime = System.nanoTime();
-		double time = (finishTime - startTime) / 1.0e6;
-		log.info(String.format("FINISH - %.2fms", time));
-		
-		// Second, query for nodes within circle!
+			for (; chkResults.hasNext();) {
+				QuerySolution chkSoln = chkResults.nextSolution();
+				RDFNode lati = chkSoln.get("lat"); // Get a result variable by name.
+				RDFNode longi = chkSoln.get("long");
+				RDFNode time = chkSoln.get("time");
+				RDFNode checkin = chkSoln.get("checkin");
+				// Resource r = soln.getResource("VarR") ; // Get a result variable - must be a resource
+				// Literal l = soln.getLiteral("VarL") ; // Get a result variable - must be a literal
 
-		dataset.begin(ReadWrite.READ);
-		startTime = System.nanoTime();
-		
-		Query q2 = null;
-		QueryExecution qexec2 = null;		
-		
+				/*
+				 * System.out.println(lati.toString());
+				 * System.out.println(longi.toString());
+				 * System.out.println(checkin.toString());
+				 * System.out.println(time.toString());
+				 */
 
-		try {
-			
-			for(MyQueryResult qr: objList) {
-				
-				System.out.println(qr.lati.toString());
-			    System.out.println(qr.longi.toString());
-			    System.out.println(qr.checkin.toString());
-			    System.out.println(qr.time.toString());	
-			      
-				// For each checkin-lat-long, query for near by node in db
+				// Second, for each checkin-lat-long, query for nodes within circle!
 				String qs2 = StrUtils.strjoinNL("SELECT DISTINCT ?node", "WHERE", "{", 
-						"?node <" + PROP_GEO_LOC.getURI() + "> ?bn ;",
-						"a <" + RES_NODE.getURI() + "> .",
-						"?bn spatial:withinCircle (" + qr.lati.asLiteral().getFloat() + " " + qr.longi.asLiteral().getFloat() + " " + range + " 'km') .", 
-						"}");
-				
-				qs2 = QUERY_PREFIX_MAIN + "\n" + qs2;
+							"?node <" + PROP_GEO_LOC.getURI() + "> ?bn ;",
+							"a <" + RES_NODE.getURI() + "> .",
+							"?bn spatial:withinCircle (" + lati.asLiteral().getFloat() + " " + longi.asLiteral().getFloat() + " " + range + " 'km') .", 
+							"}");
+
+				qs2 = QUERY_PREFIX_MAIN + System.lineSeparator() + qs2;
 				System.out.println(qs2);
-				
+
 				q2 = QueryFactory.create(qs2);
-				
+
 				qexec2 = QueryExecutionFactory.create(q2, dataset);
 				ResultSet nodeResults = qexec2.execSelect();
-				//QueryExecUtils.executeQuery(q, qexec);
+				// QueryExecUtils.executeQuery(q, qexec);
 
 				for (; nodeResults.hasNext();) {
 					QuerySolution nodeSoln = nodeResults.nextSolution();
@@ -358,18 +490,19 @@ public class MobiSosCore {
 					// add each node to array list
 					nodeList.add(node.toString());
 				} // end each node withinCircle for
-			
-			} // end for-each MyQueryResult
 
+			} // end each check-in for
+		    
 		} finally {
+			if(qexec1 != null) qexec1.close();
 			if(qexec2 != null) qexec2.close();
 			dataset.end();
 		}
 		
-		finishTime = System.nanoTime();
-		time = (finishTime - startTime) / 1.0e6;
-		log.info(String.format("FINISH - %.2fms", time));		
-
+		long finishTime = System.nanoTime();
+		double time = (finishTime - startTime) / 1.0e6;
+		log.info(String.format("FINISH - %.2fms", time));
+		
 		return nodeList;
 	}
 	
@@ -426,7 +559,8 @@ public class MobiSosCore {
 		if(chkRecords == null) throw new RuntimeException("Possibly Data Error! This user still has no check-in record yet!");
 
 		// Extract location's parameters from JSON
-		GeoLocation geoLoc = new GeoLocation(gson.fromJson(location, TitaniumLocation.class));		
+		//GeoLocation geoLoc = new GeoLocation(gson.fromJson(location, TitaniumLocation.class));
+		GeoLocation geoLoc = GeoLocation.fromTitaLoc(gson.fromJson(location, TitaniumLocation.class));
 		// IMP can we get location name from wifi check-in in the future?
 		
 		// This will also create this wifi resource if not available before (Wardriving like)
@@ -496,9 +630,8 @@ public class MobiSosCore {
 				.addLiteral(PROP_ALTI, geoLoc.getAltitude())
 				.addLiteral(PROP_ALTI_ACCU, geoLoc.getAltitudeAccuracy())
 				.addLiteral(PROP_HEADING, geoLoc.getHeading())
-				// IMP may be source of error due to lost in precision double -> float
-				.addLiteral(PROP_W3C_LAT, (float) geoLoc.getLatitude())
-				.addLiteral(PROP_W3C_LONG, (float) geoLoc.getLongitude())
+				.addLiteral(PROP_LAT, geoLoc.getLatitudeInRadians())
+				.addLiteral(PROP_LON, geoLoc.getLongitudeInRadians())
 				.addLiteral(PROP_SPEED, geoLoc.getSpeed())
 				.addLiteral(PROP_LOC_NAME, geoLoc.getLocationName()); 		
 		return locBnode;
@@ -605,8 +738,6 @@ public class MobiSosCore {
 	 * , which could incur unnecessary processing and memory
 	 * CONS
 	 * not good for usage among Java programming
-	 * IMP should separate local methods and API's methods 
-	 * or consider using a Messaging Queue solution for RPC?
 	 * 
 	 * @param id
 	 * @param user
@@ -707,7 +838,7 @@ public class MobiSosCore {
 		EntityDefinition entDef = new EntityDefinition("entityField", "geoField");
 	
 		// set custom geo predicates
-		entDef.addSpatialPredicatePair(PROP_LAT, PROP_LONG);		
+		entDef.addSpatialPredicatePair(PROP_LAT, PROP_LON);		
 		
 		// Lucene, index in File system.
 		Directory dir = FSDirectory.open(indexDir);
@@ -757,7 +888,7 @@ public class MobiSosCore {
 
 		geoDs.begin(ReadWrite.READ);
 		try {
-			Query q = QueryFactory.create(pre + "\n" + qs);
+			Query q = QueryFactory.create(pre + System.lineSeparator() + qs);
 			QueryExecution qexec = QueryExecutionFactory.create(q, geoDs);
 			QueryExecUtils.executeQuery(q, qexec);
 		} finally {
@@ -776,7 +907,7 @@ public class MobiSosCore {
 
 		geoDs.begin(ReadWrite.READ);
 		try {
-			Query q = QueryFactory.create(pre + "\n" + qs);
+			Query q = QueryFactory.create(pre + System.lineSeparator() + qs);
 			QueryExecution qexec = QueryExecutionFactory.create(q, geoDs);
 			QueryExecUtils.executeQuery(q, qexec);
 		} finally {
@@ -794,7 +925,7 @@ public class MobiSosCore {
  
 		geoDs.begin(ReadWrite.READ);
 		try {
-			Query q = QueryFactory.create(pre + "\n" + qs);
+			Query q = QueryFactory.create(pre + System.lineSeparator() + qs);
 			QueryExecution qexec = QueryExecutionFactory.create(q, geoDs);
 			QueryExecUtils.executeQuery(q, qexec);
 		} finally {
@@ -814,7 +945,7 @@ public class MobiSosCore {
 
 		geoDs.begin(ReadWrite.READ);
 		try {
-			Query q = QueryFactory.create(pre + "\n" + qs);
+			Query q = QueryFactory.create(pre + System.lineSeparator() + qs);
 			QueryExecution qexec = QueryExecutionFactory.create(q, geoDs);
 			QueryExecUtils.executeQuery(q, qexec);
 		} finally {
@@ -837,13 +968,13 @@ public class MobiSosCore {
 		//model = ModelFactory.createDefaultModel();
 		Resource r = model.createResource(URI_BASE + "tokyo");
 
-		model.addLiteral(r, PROP_W3C_LAT, 37.78583f);
-		model.addLiteral(r, PROP_W3C_LONG, -122.40641f);
+		model.addLiteral(r, PROP_LAT, 37.78583f);
+		model.addLiteral(r, PROP_LON, -122.40641f);
 		
 		Resource r2 = model.createResource(URI_BASE + "near.tokyo");
 
 		model.addLiteral(r2, PROP_LAT, 37.000);
-		model.addLiteral(r2, PROP_LONG, -122.000);			
+		model.addLiteral(r2, PROP_LON, -122.000);			
 				
 		model.close();
 		dataset.commit();
