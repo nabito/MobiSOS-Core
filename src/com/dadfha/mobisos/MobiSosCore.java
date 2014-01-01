@@ -167,7 +167,6 @@ public class MobiSosCore {
 		
 	public MobiSosCore() throws IOException {
 		
-		
 		// Fuseki start-up
 		new Thread(new Runnable(){
 			@Override
@@ -188,8 +187,8 @@ public class MobiSosCore {
 			
 		}).start();
 		
-		
-		dataset = initTDBDatasetWithLuceneSpatitalIndex(TDB_INDEX_DIR, TDB_DIR, false);
+		dataset = initDbDataset(TDB_DIR, false);
+		//dataset = initTDBDatasetWithLuceneSpatitalIndex(TDB_INDEX_DIR, TDB_DIR, false);
 
 		//loadData(dataset, "/Users/Wirawit/dev/jena-fuseki-1.0.0/geoarq-data-1.ttl");		
 		
@@ -248,10 +247,10 @@ public class MobiSosCore {
 	/**
 	 * findNearbyNodes using haversine formula + bounding coordinates technique
 	 * @param uuid
-	 * @param distance
-	 * @param since
-	 * @param until
-	 * @return List<NearByNodeResult> list of near-by-node finding result (NearBy
+	 * @param distance the radius length in KM to look for near by nodes WRT each check-in location
+	 * @param since record lookup start time (time unit in milliseconds since midnight, January 1, 1970 UTC.) Value 0L will cause the function to ignore start time filter.
+	 * @param until record lookup end time (time unit in milliseconds since midnight, January 1, 1970 UTC.) Value 0L will cause the function to ignore stop time filter.
+	 * @return List<NearByNodeResult> list of near-by-node finding result
 	 */
 	private List<NearByNodeResult> findNearbyNodes(String uuid, double distance, long since, long until) {
 
@@ -385,127 +384,7 @@ public class MobiSosCore {
 		log.info(String.format("FINISH - %.2fms", time));
 		
 		return nbnList;
-	}	
-	
-	/**
-	 * findNearbyNodes
-	 * @param uid user ID 
-	 * @param range the radius range in KM to look for near by nodes WRT each check-in location
-	 * @param since record lookup start time (time unit in milliseconds since midnight, January 1, 1970 UTC.) Value 0L will cause the function to ignore start time filter.
-	 * @param until record lookup end time (time unit in milliseconds since midnight, January 1, 1970 UTC.) Value 0L will cause the function to ignore stop time filter.
-	 * @return ArrayList<String> list of nearby nodes
-	 */
-	private List<String> findNearbyNodesOld(String uid, double range, long since, long until) {
-		ArrayList<String> nodeList = new ArrayList<String>();
-		
-		/*
-		 * temporary structured collection pattern
-		class MyQueryResult {
-			RDFNode lati, longi, time, checkin;
-			MyQueryResult(RDFNode lati, RDFNode longi, RDFNode time, RDFNode checkin) {
-				this.lati = lati; this.longi = longi; this.time = time; this.checkin = checkin;
-			}
-		}
-		ArrayList<MyQueryResult> objList = new ArrayList<MyQueryResult>();
-		*/
-		
-		String sinceCond = "";
-		String untilCond = "";
-		String andCond = "";
-		String filter = "";
-		if(since != 0L) sinceCond = "?time >= " + since;
-		if(since != 0L) untilCond = "?time <= " + until;
-		if(since != 0L && until != 0L) andCond = " && ";
-		if(since != 0L || until != 0L) filter = " FILTER (" + sinceCond + andCond + untilCond + ")";
-		
-		String qs1 = StrUtils.strjoinNL("SELECT ?lat ?long ?checkin ?time", "WHERE",			
-				"{",
-				"<" + RES_USER.getURI() + "." + uid + "> <" + PROP_HAS_CHECKIN.getURI() + "> ?seq .",
-				"?seq ?ord ?checkin .",
-				"?checkin <" + PROP_GEO_LOC.getURI() + "> ?bn .",
-				"?checkin <" + PROP_TIMESTAMP.getURI() + "> ?time .",
-				"?bn <" + PROP_LAT.getURI() + "> ?lat .",
-				"?bn <" + PROP_LON.getURI() + "> ?long .",
-//				"?bn2 spatial:withinCircle (?lat ?long " + range + " 'km') .", // this currently is not working due to Jena spatial bug/feature?
-				filter,
-				"}", 
-				"ORDER BY DESC(?time)"
-				);
-		
-		// First, query for check-ins	
-		dataset.begin(ReadWrite.READ);
-		long startTime = System.nanoTime();
-		Query q1 = null;
-		QueryExecution qexec1 = null;
-		Query q2 = null;
-		QueryExecution qexec2 = null;	
-	
-		try {
-			
-			qs1 = QUERY_PREFIX_MAIN + System.lineSeparator() + qs1;
-			
-			System.out.println(qs1);
-			
-			q1 = QueryFactory.create(qs1);
-			qexec1 = QueryExecutionFactory.create(q1, dataset);
-		    ResultSet chkResults = qexec1.execSelect();
-
-			for (; chkResults.hasNext();) {
-				QuerySolution chkSoln = chkResults.nextSolution();
-				RDFNode lati = chkSoln.get("lat"); // Get a result variable by name.
-				RDFNode longi = chkSoln.get("long");
-				RDFNode time = chkSoln.get("time");
-				RDFNode checkin = chkSoln.get("checkin");
-				// Resource r = soln.getResource("VarR") ; // Get a result variable - must be a resource
-				// Literal l = soln.getLiteral("VarL") ; // Get a result variable - must be a literal
-
-				/*
-				 * System.out.println(lati.toString());
-				 * System.out.println(longi.toString());
-				 * System.out.println(checkin.toString());
-				 * System.out.println(time.toString());
-				 */
-
-				// Second, for each checkin-lat-long, query for nodes within circle!
-				String qs2 = StrUtils.strjoinNL("SELECT DISTINCT ?node", "WHERE", "{", 
-							"?node <" + PROP_GEO_LOC.getURI() + "> ?bn ;",
-							"a <" + RES_NODE.getURI() + "> .",
-							"?bn spatial:withinCircle (" + lati.asLiteral().getFloat() + " " + longi.asLiteral().getFloat() + " " + range + " 'km') .", 
-							"}");
-
-				qs2 = QUERY_PREFIX_MAIN + System.lineSeparator() + qs2;
-				System.out.println(qs2);
-
-				q2 = QueryFactory.create(qs2);
-
-				qexec2 = QueryExecutionFactory.create(q2, dataset);
-				ResultSet nodeResults = qexec2.execSelect();
-				// QueryExecUtils.executeQuery(q, qexec);
-
-				for (; nodeResults.hasNext();) {
-					QuerySolution nodeSoln = nodeResults.nextSolution();
-					RDFNode node = nodeSoln.get("node");
-					System.out.println(node.toString());
-
-					// add each node to array list
-					nodeList.add(node.toString());
-				} // end each node withinCircle for
-
-			} // end each check-in for
-		    
-		} finally {
-			if(qexec1 != null) qexec1.close();
-			if(qexec2 != null) qexec2.close();
-			dataset.end();
-		}
-		
-		long finishTime = System.nanoTime();
-		double time = (finishTime - startTime) / 1.0e6;
-		log.info(String.format("FINISH - %.2fms", time));
-		
-		return nodeList;
 	}
-	
 	
 	public void generateMashup() {
 		// TODO map with tracking update in real-time, video always connect, latest status/info summary, archive log, near by user 
@@ -774,7 +653,14 @@ public class MobiSosCore {
 		model.close();
 		dataset.end();
 	}
-	
+
+	private static Dataset initDbDataset(File TDBDir, boolean preserveOldData) {
+		if(!preserveOldData) {			
+			deleteOldFiles(TDBDir);
+			TDBDir.mkdir();		
+		}
+		return TDBFactory.createDataset(TDBDir.getAbsolutePath());
+	}
 
     private static Dataset initTDBDatasetWithLuceneSpatitalIndex(File indexDir, File TDBDir, boolean preserveOldData) throws IOException{
 		SpatialQuery.init();
@@ -784,7 +670,8 @@ public class MobiSosCore {
 			deleteOldFiles(indexDir);
 			indexDir.mkdirs();			
 		}
-		return createDatasetByCode(indexDir, TDBDir);
+		Dataset ds1 = TDBFactory.createDataset(TDBDir.getAbsolutePath());
+		return joinIndexDataset(indexDir, ds1);		
     }	
     
     /**
@@ -812,20 +699,7 @@ public class MobiSosCore {
             }
         }
         dir.delete() ;
-    }	
-    
-    /**
-     * createDatasetByCode
-     * @param indexDir
-     * @param TDBDir
-     * @return
-     * @throws IOException
-     */
-	private static Dataset createDatasetByCode(File indexDir, File TDBDir) throws IOException {
-		// Base data
-		Dataset ds1 = TDBFactory.createDataset(TDBDir.getAbsolutePath());
-		return joinIndexDataset(indexDir, ds1);
-	}    
+    } 
 	
 	/**
 	 * joinIndexDataset
@@ -870,95 +744,7 @@ public class MobiSosCore {
 		double time = (finishTime - startTime) / 1.0e6;
 		log.info(String.format("Finish loading - %.2fms", time));
 	}	
-	
-	private static void queryData(Dataset geoDs) throws IOException {
 		
-		long startTime;
-		long finishTime;
-		double time;
-		
-		String pre = QUERY_PREFIX_MAIN;
-
-		String qs = "";
-		
-		System.out.println("withinCircle");
-		startTime = System.nanoTime();
-		qs = StrUtils.strjoinNL("SELECT * ",
-				" { ?s spatial:withinCircle (37.78583 -122.40641 10.0 'km' 3) ."," }");
-
-		geoDs.begin(ReadWrite.READ);
-		try {
-			Query q = QueryFactory.create(pre + System.lineSeparator() + qs);
-			QueryExecution qexec = QueryExecutionFactory.create(q, geoDs);
-			QueryExecUtils.executeQuery(q, qexec);
-		} finally {
-			geoDs.end();
-		}
-		finishTime = System.nanoTime();
-		time = (finishTime - startTime) / 1.0e6;
-		log.info(String.format("FINISH - %.2fms", time));
-		
-		System.out.println("withinBox");
-		startTime = System.nanoTime();
-		qs = StrUtils.strjoinNL("SELECT * ",
-				" { ?s spatial:withinBox (30.00 -130.00 40.00 -100.00) .", " }");
-//				" { ?s spatial:withinBox (30.00 -100.00 40.00 -130.00 -1) ;",
-//				"      rdfs:label ?label", " }");
-
-		geoDs.begin(ReadWrite.READ);
-		try {
-			Query q = QueryFactory.create(pre + System.lineSeparator() + qs);
-			QueryExecution qexec = QueryExecutionFactory.create(q, geoDs);
-			QueryExecUtils.executeQuery(q, qexec);
-		} finally {
-			geoDs.end();
-		}
-		finishTime = System.nanoTime();
-		time = (finishTime - startTime) / 1.0e6;
-		log.info(String.format("FINISH - %.2fms", time));		
-		
-		System.out.println("nearby");
-		startTime = System.nanoTime();
-		qs = StrUtils.strjoinNL("SELECT * ",
-				" { ?s spatial:nearby (51.3000 -2.71000 100.0 'miles') ;",
-				"      rdfs:label ?label", " }");
- 
-		geoDs.begin(ReadWrite.READ);
-		try {
-			Query q = QueryFactory.create(pre + System.lineSeparator() + qs);
-			QueryExecution qexec = QueryExecutionFactory.create(q, geoDs);
-			QueryExecUtils.executeQuery(q, qexec);
-		} finally {
-			geoDs.end();
-		}
-		finishTime = System.nanoTime();
-		time = (finishTime - startTime) / 1.0e6;
-		log.info(String.format("FINISH - %.2fms", time));		
-
-		
-		// dump query
-		/*
-		System.out.println("dump");
-		startTime = System.nanoTime();
-		qs = StrUtils.strjoinNL("SELECT * ",
-				" { ?s ?p ?o .", " }");
-
-		geoDs.begin(ReadWrite.READ);
-		try {
-			Query q = QueryFactory.create(pre + System.lineSeparator() + qs);
-			QueryExecution qexec = QueryExecutionFactory.create(q, geoDs);
-			QueryExecUtils.executeQuery(q, qexec);
-		} finally {
-			geoDs.end();
-		}
-		finishTime = System.nanoTime();
-		time = (finishTime - startTime) / 1.0e6;
-		log.info(String.format("FINISH - %.2fms", time));	
-		*/		
-		
-		
-	}
-	
 	public void addSamples() {
 		
 		// Init TDB (even if when already done before)				
