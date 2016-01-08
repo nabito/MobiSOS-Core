@@ -9,7 +9,7 @@ public class TitaniumLocation {
 	private double latitude;	// Latitude of the location update, in decimal degrees.
 	private double longitude;	// Longitude of the location update, in decimal degrees.
 	private double speed;		// Current speed in meters/second. ...
-	private long timestamp = System.currentTimeMillis();	// Timestamp for this location update, in milliseconds.
+	private long timestamp = System.currentTimeMillis();	// Timestamp for this location update, in milliseconds counting fromJanuary 1, 1970 UTC.
 	
 	public TitaniumLocation() {
 		

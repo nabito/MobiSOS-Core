@@ -1,4 +1,7 @@
 package com.dadfha.mobisos;
+
+import java.util.Random;
+
 /**
  * compatible with Titanium Mobile FW location object
  * http://docs.appcelerator.com/titanium/3.0/#!/api/LocationCoordinates  
@@ -21,6 +24,8 @@ public class GeoLocation extends TitaniumLocation {
 	private static final double MIN_LON = Math.toRadians(-180d); // -PI
 	private static final double MAX_LON = Math.toRadians(180d);  //  PI
 	
+	private static final Random randy = new Random();
+	
 	private GeoLocation() {}
 	
 	private GeoLocation(TitaniumLocation tl) {
@@ -29,6 +34,7 @@ public class GeoLocation extends TitaniumLocation {
 	
 	public static GeoLocation fromTitaLoc(TitaniumLocation tl) {
 		GeoLocation result = new GeoLocation(tl);
+		// lat and lon attributes from TitaniumLocation are used only for initialization, they may not be sync with this class's attributes 
 		double latitude = tl.getLatitude();
 		double longitude = tl.getLongitude();
 		result.radLat = Math.toRadians(latitude);
@@ -227,6 +233,63 @@ public class GeoLocation extends TitaniumLocation {
 	 */
 	public void setLocationName(String locationName) {
 		this.locationName = locationName;
-	}	
+	}
+	
+	public double getLatitude() {
+		return degLat;
+	}
+	
+	public double getLongitude() {
+		return degLon;
+	}
+	
+	/**
+	 * Create random location within distance (km) from a location
+	 * @param distance distance from referenced location
+	 * @param center the location used as reference point
+	 * @return random GeoLocation within distance from center
+	 * @author Wirawit C.
+	 */	
+	public static GeoLocation randomCoordInDistance(double distance, GeoLocation center) {
+		return randomCoordInDistance(distance, center, 0L);
+	}
+	
+	/**
+	 * Create random location within distance (km) from a location
+	 * @param distance distance from referenced location
+	 * @param center the location used as reference point
+	 * @return random GeoLocation within distance from center
+	 * @author Wirawit C.
+	 */
+	public static GeoLocation randomCoordInDistance(double distance, GeoLocation center, long timestamp) {
+		
+		GeoLocation randomLoc = null;
+		do
+		{
+			GeoLocation[] box = center.boundingCoordinates(distance, GeoLocation.R);
+			// this random intentionally omit upper bound to retain good distribution among other value 
+			double randomLat = ( randy.nextDouble() * (box[1].getLatitudeInRadians() - box[0].getLatitudeInRadians()) ) + box[0].getLatitudeInRadians();
+			double randomLon = 0.0;
+			// if the bounding box overlap 180th meridian
+			if(box[0].getLongitudeInRadians() > box[1].getLongitudeInRadians()) {					
+				// Here left-right is defined to be divided by 180th meridian
+				double leftSide = 180.0 - box[0].getLongitudeInDegrees();
+				double rightSide = box[1].getLongitudeInDegrees() + 180.0;				
+				double randomLength = ( randy.nextDouble() * (leftSide + rightSide) );
+				
+				// Conditional offset at 180th meridian 
+				if(randomLength < leftSide) randomLon = randomLength + box[0].getLongitudeInDegrees();
+				else if(randomLength == leftSide) randomLon = 180.0;
+				else if(randomLength > leftSide) randomLon = ( -180.0 + (randomLength - leftSide) );
+				randomLon = Math.toRadians(randomLon);
+			} else { 
+				randomLon = ( randy.nextDouble() * (box[1].getLongitudeInRadians() - box[0].getLongitudeInRadians()) ) + box[0].getLongitudeInRadians();
+			}				
+			randomLoc = GeoLocation.fromRadians(randomLat, randomLon);
+			randomLoc.setTimestamp(timestamp);
+		} while( GeoLocation.haversine(center, randomLoc) > distance );
+
+		return randomLoc;
+	}
 
 }

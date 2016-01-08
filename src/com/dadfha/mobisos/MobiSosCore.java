@@ -1,15 +1,23 @@
 package com.dadfha.mobisos;
 
 import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Date;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Random;
 import java.util.UUID;
 
 import org.apache.jena.atlas.lib.StrUtils;
 import org.apache.jena.atlas.logging.Log;
 import org.apache.jena.fuseki.Fuseki;
 import org.apache.jena.fuseki.FusekiCmd;
+
+import au.com.bytecode.opencsv.CSVWriter;
 
 import com.google.gson.Gson;
 import com.hp.hpl.jena.query.ARQ;
@@ -22,9 +30,11 @@ import com.hp.hpl.jena.query.QueryFactory;
 import com.hp.hpl.jena.query.QuerySolution;
 import com.hp.hpl.jena.query.ReadWrite;
 import com.hp.hpl.jena.query.ResultSet;
+import com.hp.hpl.jena.query.ResultSetFormatter;
 import com.hp.hpl.jena.rdf.model.Bag;
 import com.hp.hpl.jena.rdf.model.Literal;
 import com.hp.hpl.jena.rdf.model.Model;
+import com.hp.hpl.jena.rdf.model.ModelFactory;
 import com.hp.hpl.jena.rdf.model.Property;
 import com.hp.hpl.jena.rdf.model.RDFNode;
 import com.hp.hpl.jena.rdf.model.ResIterator;
@@ -54,23 +64,66 @@ import org.slf4j.LoggerFactory;
 
 public class MobiSosCore {
 	
+	// Testing Params
+	public static final int TESTCASE_N = 5;
+	public static final int TEST_N = 1;
+	public static final int[] USER_N_TESTCASE = { 100, 100, 100, 100, 100 };
+	public static final int[] CHECKIN_N_TESTCASE = { 30, 30, 30, 30, 30 };
+	//final int CHECKIN_WIFI_N = 10;
+	//final int CHECKIN_TAG_N = 10;
+	public static final int[] WIFI_ROUTER_N_TESTCASE = { 10, 100, 1000, 10000, 100000 };
+	public static final int[] TAG_N_TESTCASE = { 10, 100, 1000, 10000, 100000 };
+	public static final int[] CAMERA_N_TESTCASE = { 10, 100, 1000, 10000, 100000 };
+	
+	public static int USER_N = 1;
+	public static int CHECKIN_N = 30;
+	public static int WIFI_ROUTER_N = 10;
+	public static int TAG_N = 10;
+	public static int CAMERA_N = 10;
+	
+	public static int CURRENT_TESTCASE;
+	
+	
+	final double DISTANCE_FROM_CENTER = 10.0; // km unit
+	final double WALK_DISTANCE = 1000.0; // m unit before next check-in
+	final double AVG_WALK_SPEED = (25.0/18.0); // m/s unit
+	final GeoLocation center = GeoLocation.fromDegrees(35.689506, 139.6917);	
+	
+	
+	// TODO refactor to use Checkin class internally
+	// Add the timing measure to result too!!! or declare global to takecare of debug and testing
 	class NearByNodeResult {
 		public String checkin;
 		public double lat, lon;
 		public long time;
+		public double q1Time;
+		public double q2Time;
+		public double totalQueryTime;
 		public List<String> nodeList;
-		NearByNodeResult(String checkin, double lat, double lon, long time, List<String> nodeList) {
-			this.lat = lat; this.lon = lon; this.time = time; this.checkin = checkin; this.nodeList = nodeList;
+		NearByNodeResult(String checkin, double lat, double lon, long time, List<String> nodeList, double q1Time, double q2Time, double totalQueryTime) {
+			this.lat = lat; this.lon = lon; this.time = time; this.checkin = checkin; this.nodeList = nodeList; this.q1Time = q1Time; this.q2Time = q2Time; this.totalQueryTime = totalQueryTime;
 		}
-	}	
+	}
+	
+	class Checkin {
+		public String checkinUri;
+		public GeoLocation loc;
+		public long timestamp;
+		Checkin(String checkinUri, GeoLocation loc, long timestamp) {
+			this.checkinUri = checkinUri; this.loc = loc; this.timestamp = timestamp;
+		}
+	}
 	
 	static {
 		Log.setLog4j();
 	}
 	static Logger log = LoggerFactory.getLogger("MobiSosCoreLogger");	
 	
-	private static final String TDB_PATH = "/Users/Wirawit/dev/jena-fuseki-1.0.0/MobiSosTDB";
-	private static final String TDB_INDEX_PATH = "/Users/Wirawit/dev/jena-fuseki-1.0.0/MobiSosTdbIndex";
+	private static final String FUSEKI_HOME_PATH = "/Users/Wirawit/dev/jena-fuseki-1.0.0";
+	// TODO Upgrade to Fuseki 2.x for Security support, Admin UI, and etc. 
+	//private static final String FUSEKI_HOME_PATH = "/Users/Wirawit/dev/apache-jena-fuseki-2.3.1";
+	private static final String TDB_PATH = FUSEKI_HOME_PATH + "/MobiSosTDB";
+	private static final String TDB_INDEX_PATH = FUSEKI_HOME_PATH + "/MobiSosTdbIndex";
 	private static final File TDB_DIR = new File(TDB_PATH);
 	private static final File TDB_INDEX_DIR = new File(TDB_INDEX_PATH);
 	
@@ -81,6 +134,7 @@ public class MobiSosCore {
 	
 	// Prefix must be a valid NCName - http://en.wikipedia.org/wiki/QName
 	private static final String URI_PREFIX_BASE = "mbs";
+	private static final String URI_PREFIX_RDF = "rdf";
 	private static final String URI_PREFIX_RDFS = "rdfs";
 	private static final String URI_PREFIX_XSD = "xsd";
 	private static final String URI_PREFIX_W3C_GEO = "geo";
@@ -88,7 +142,8 @@ public class MobiSosCore {
 	
 	// SPARQL query prefix
 	private static final String QUERY_PREFIX_MAIN = StrUtils.strjoinNL("PREFIX " + URI_PREFIX_BASE + ": <" + URI_BASE + ">",
-			"PREFIX " + URI_PREFIX_JENA_SPATIAL + ": <" + URI_JENA_SPATIAL + ">",
+			//"PREFIX " + URI_PREFIX_JENA_SPATIAL + ": <" + URI_JENA_SPATIAL + ">",
+			"PREFIX " + URI_PREFIX_RDF + ": <"+ RDF.getURI() +">",
 			"PREFIX " + URI_PREFIX_RDFS + ": <"+ RDFS.getURI() +">",
 			"PREFIX " + URI_PREFIX_XSD + ": <" + XSD.getURI() + ">"
 			);
@@ -111,7 +166,11 @@ public class MobiSosCore {
 	public static final Resource RES_WIFI  = resource("wifi");
 	public static final Resource RES_CAMERA  = resource("cam");
 	public static final Resource RES_UC_TAG  = resource("uctag");
-	public static final Resource RES_UBIX  = resource("ubix"); // The ubiquitous explorer 
+	public static final Resource RES_UBIX  = resource("ubix"); // The ubiquitous explorer
+	
+	public static final Resource RES_TRACK_SERV  = resource("TrackService");
+	public static final Resource RES_VDO_SERV  = resource("VideoService");
+	public static final Resource RES_SERV_LIST = resource("serv-list");
 	
 	public static final Property PROP_UUID = property("uuid");
 	public static final Property PROP_UDID = property("udid");
@@ -129,6 +188,9 @@ public class MobiSosCore {
 	public static final Property PROP_LAST_SEEN = property("lastSeen");
 	public static final Property PROP_L10N_METHOD = property("l10nMethod");
 	
+	public static final Property PROP_HAS_SERV = property("hasService");
+	
+	
 	// GeoLocation related properties
 	public static final Property PROP_ACCU = property("accuracy");
 	public static final Property PROP_ALTI = property("altitude");
@@ -139,7 +201,7 @@ public class MobiSosCore {
 	public static final Property PROP_SPEED = property("speed");
 	public static final Property PROP_LOC_NAME = property("locationName");
 	
-	public static final Property PROP_W3C_LAT = property(URI_W3C_GEO, "lat"); // degree unit
+	public static final Property PROP_W3C_LAT = property(URI_W3C_GEO, "lat"); // degree unit (so not used in our system now)
 	public static final Property PROP_W3C_LON = property(URI_W3C_GEO, "long");
 	
 	/**
@@ -147,9 +209,19 @@ public class MobiSosCore {
 	 */
 	private static final double NODE_LOOKUP_RANGE = 1.0;
 	
+	/**
+	 * Limit number of returned node queried result for each check-in
+	 */
+	private static final int NODE_RESULT_N = 10;
+	
 	private static final int SCRYPT_PARAM_N = 16384;
 	private static final int SCRYPT_PARAM_R = 8;
 	private static final int SCRYPT_PARAM_P = 1;
+	
+	/**
+	 * milliseconds in on day
+	 */
+	private static final long ONEDAY_MS = 86400000L;
 	
 	private static final Gson gson = new Gson();
 	
@@ -164,30 +236,36 @@ public class MobiSosCore {
     
     protected static final Property property( String uri, String local )
     { return ResourceFactory.createProperty( uri, local ); }	    
+	
+    public MobiSosCore() throws IOException {
+    	this(true, false);
+    }
+    
+	public MobiSosCore(boolean enableFuseki, boolean preserveOldData) throws IOException {
 		
-	public MobiSosCore() throws IOException {
+		if(enableFuseki == true) {
+			// Fuseki start-up
+			new Thread(new Runnable(){
+				@Override
+				public void run() {
+					// Init the Fuseki
+			    	String[] args = new String[4];
+			    	args[0] = "--loc=" + TDB_PATH;
+			    	args[1] = "--home=" + FUSEKI_HOME_PATH;	
+			    	args[2] = "--update";	
+			    	args[3] = "/mobisos";		
+			    	
+			        // Just to make sure ...
+			        ARQ.init() ;
+			        TDB.init() ;
+			        Fuseki.init() ;
+			        new FusekiCmd(args).mainRun();				
+				}
+				
+			}).start();			
+		}
 		
-		// Fuseki start-up
-		new Thread(new Runnable(){
-			@Override
-			public void run() {
-				// Init the Fuseki
-		    	String[] args = new String[4];
-		    	args[0] = "--loc=/Users/Wirawit/dev/jena-fuseki-1.0.0/MobiSosTDB/";
-		    	args[1] = "--home=/Users/Wirawit/dev/jena-fuseki-1.0.0/";	
-		    	args[2] = "--update";	
-		    	args[3] = "/mobisos";		
-		    	
-		        // Just to make sure ...
-		        ARQ.init() ;
-		        TDB.init() ;
-		        Fuseki.init() ;
-		        new FusekiCmd(args).mainRun();				
-			}
-			
-		}).start();
-		
-		dataset = initDbDataset(TDB_DIR, false);
+		dataset = initDbDataset(TDB_DIR, preserveOldData);
 		//dataset = initTDBDatasetWithLuceneSpatitalIndex(TDB_INDEX_DIR, TDB_DIR, false);
 
 		//loadData(dataset, "/Users/Wirawit/dev/jena-fuseki-1.0.0/geoarq-data-1.ttl");		
@@ -201,33 +279,186 @@ public class MobiSosCore {
 		// IMP consider naming graph for better management/performance? at least sensor DB should get separated from app db
 		// dataset.addNamedModel(NS_MOBISOS + NS_PREFIX_MOBISOS, model);
 		model.setNsPrefix(URI_PREFIX_BASE, URI_BASE);
-		model.setNsPrefix(URI_PREFIX_W3C_GEO, URI_W3C_GEO);				
+		model.setNsPrefix(URI_PREFIX_RDF, RDF.getURI());
+		//model.setNsPrefix(URI_PREFIX_W3C_GEO, URI_W3C_GEO);
+		model.setNsPrefix(URI_PREFIX_XSD, XSD.getURI());
+		model.setNsPrefix(URI_PREFIX_RDFS, RDFS.getURI());
 
+		model.close();		
+		dataset.commit();
+		dataset.end();		
+
+	}
+	
+	public String[] generateTestData(double distance, double walkDistance, double avgWalkSpeed, int userN, int checkinN, int wifiRouterN, int tagN, int cameraN) {
+		
+		String[] users = new String[userN];
+		final Random randy = new Random();
+		GeoLocation randomLoc = null;
+		
+		String macAddr;
+		ArrayList<String> macAddrList = new ArrayList<String>();
+		
+		//String uuid = createUser("tester@dadfha.com", "passwd", generateUUID());
+		
+		dataset.begin(ReadWrite.WRITE);
+		model = dataset.getDefaultModel();
+
+		for(int i=0; i < wifiRouterN; i++) {
+			randomLoc = GeoLocation.randomCoordInDistance(distance, center);
+			macAddr = generateMacAddress(false);
+			macAddrList.add(macAddr);
+			createWifiResource(model, macAddr, randomLoc, true);	
+		}		
+		
+		for(int i=0; i < tagN; i++) {
+			randomLoc = GeoLocation.randomCoordInDistance(distance, center);			
+			createTagResource(model, generateUUID(), randomLoc);
+		}		
+		
+		for(int i=0; i < cameraN; i++) {
+			randomLoc = GeoLocation.randomCoordInDistance(distance, center);			
+			createCameraResource(model, generateUUID(), randomLoc);			
+		}
+		
 		model.close();		
 		dataset.commit();
 		dataset.end();
 		
+		for(int i=0; i < userN; i++) {
+			users[i] = generateTestUserRecord( Long.toHexString(Double.doubleToLongBits(Math.random())), GeoLocation.randomCoordInDistance(distance, center, 0L), walkDistance, avgWalkSpeed, checkinN );
+		}
+		
+		return users;
 		
 	}
 	
-	public void sosCall(String uid, String udid, String location) throws IOException {
+	public String generateTestUserRecord(String username, GeoLocation startLocation, double walkDistance, double avgWalkSpeed, int checkinN) {
+		String uuid = createUser(username, "passwd", generateUUID());
 		
-		System.out.println("SOS called on mobiSOS-Core");
+		long startTime = System.currentTimeMillis();
+		startLocation.setTimestamp(startTime);
+		GeoLocation newLoc = startLocation;
+		// t = s/v = 100m / (5km/hr) = 100 / (5000m/3600s) = 100 / (25/18) = 1800/25 = 72,000ms
+		int deltaT = (int) ( ( walkDistance / avgWalkSpeed ) * 1000 ); // in ms
+		
+		for(int i=0; i < checkinN; i++) {
+			try {		
+				checkin(uuid, newLoc);				
+			} catch (Exception e) {				
+				e.printStackTrace();
+			}
+			// IMP create mobile simulation with configurable ave speed, distance before changing direction and plot on google earth (or map street?)
+			startTime += deltaT;
+			newLoc = GeoLocation.randomCoordInDistance(walkDistance, newLoc, startTime);	
+		}
+		
+		/*
+		for(int i=0; i < CHECKIN_WIFI_N; i++) {			
+			try {
+				// randomly choose from known Wifi in the environment
+				checkinWifi(uuid, newLoc, macAddrList.get(randy.nextInt(macAddrList.size() + 1)));				
+			} catch (Exception e) {				
+				e.printStackTrace();
+			}
+			// IMP create mobile simulation with configurable ave speed, distance before changing direction and plot on google earth (or map street?)
+			startTime += deltaT;
+			newLoc = GeoLocation.randomCoordInDistance(WALK_DISTANCE, newLoc, startTime);
+		}	
+		*/			
+		
+		return uuid;
+	}
+	
+	public void beginTest() throws IOException {
+				
+		Log.disable("MobiSosCoreLogger");
+		
+		double avgQ1Time = 0.0, nowQ1Time = 0.0;
+		double avgQ2Time = 0.0, nowQ2Time = 0.0;
+		double avgTotalQueryTime = 0.0, nowTotalQueryTime = 0.0;
+		
+		String[] uuid = generateTestData(DISTANCE_FROM_CENTER, WALK_DISTANCE, AVG_WALK_SPEED, USER_N, CHECKIN_N, WIFI_ROUTER_N, TAG_N, CAMERA_N);
+
+		for(int i=0; i < TEST_N; i++) {
+		
+			for(int j=0; j < USER_N; j++) {
+				
+				ArrayList<NearByNodeResult> res = (ArrayList<NearByNodeResult>) findNearbyNodes(uuid[j], NODE_LOOKUP_RANGE, (System.currentTimeMillis() - ONEDAY_MS), System.currentTimeMillis());
+				
+				int checkinCount = 0;
+				nowQ1Time = 0.0;
+				nowQ2Time = 0.0;
+				nowTotalQueryTime = 0.0;
+				
+				for(NearByNodeResult nbn: res) {
+					checkinCount++;
+					String s = String.format("%n%d. Checkin: %s%n Lat: %s%n Lon: %s%n Time: %s%n", checkinCount, nbn.checkin, nbn.lat, nbn.lon, nbn.time);
+					log.info(s);
+					log.info(" Near by node(s):");
+					for(String node: nbn.nodeList) {
+						log.info("  " + node);
+					}
+					nowQ1Time = nbn.q1Time;
+					nowQ2Time += nbn.q2Time;
+					nowTotalQueryTime += nbn.totalQueryTime;
+				}
+				
+				avgQ1Time += nowQ1Time;
+				avgQ2Time += (nowQ2Time / checkinCount);
+				avgTotalQueryTime += (nowTotalQueryTime / checkinCount);				
+				
+			}
+			
+		}
+		
+		avgQ1Time /= (TEST_N * USER_N);
+		avgQ2Time /= (TEST_N * USER_N);
+		avgTotalQueryTime /= (TEST_N * USER_N);
+		
+		String summary = String.format("%n Average Query1 Time: %f%n Average Query2 Time: %f%n Average Total Query Time: %f%n", avgQ1Time, avgQ2Time, avgTotalQueryTime);
+		System.out.println(summary);
+		
+		Date date = new Date();
+		SimpleDateFormat sdf = new SimpleDateFormat("MM-dd-yyyy h:mm:ss a");
+		log.info(sdf.format(date));
+		String filePrefix = sdf.format(date) + " Test" + CURRENT_TESTCASE;
+		//exportModelToFile(filePrefix + ".ttl", "TTL");
+		
+		CSVWriter writer = new CSVWriter(new FileWriter(filePrefix + ".csv"), ',');
+	    // feed in your array (or convert your data to an array)
+	    String[] entries = { Long.toString(model.size()), Double.toString(avgQ1Time), Double.toString(avgQ2Time), Double.toString(avgTotalQueryTime) };
+	    writer.writeNext(entries);
+		writer.close();
+
+	}
+	
+	public void sosCall(String uuid, String udid, String location) throws IOException {
+		
+		log.info("SOS called on mobiSOS-Core");
 		
 		boolean success = true;
 		
 		// update latest checkin to DB
-		checkInGps(uid, udid, location);
+		if(location != null) {
+			try {
+				checkin(uuid, location);
+			} catch (Exception e) {
+				e.printStackTrace();
+			}			
+		}
 		
-		// TODO turn user's SOS flag on
+		// IMP turn user's SOS flag on
 		
-		// query semantic DB for nearby nodes
-		ArrayList<NearByNodeResult> res = (ArrayList<NearByNodeResult>) findNearbyNodes(uid, NODE_LOOKUP_RANGE);
+		// query semantic DB for nearby nodes from 24-hours before until now
+		ArrayList<NearByNodeResult> res = (ArrayList<NearByNodeResult>) findNearbyNodes(uuid, NODE_LOOKUP_RANGE, (System.currentTimeMillis() - ONEDAY_MS), System.currentTimeMillis());
 		
+		int counter = 0;
 		for(NearByNodeResult nbn: res) {
-			String s = String.format("%nCheckin: %s%n Lat: %s%n Lon: %s%n Time: %s%n", nbn.checkin, nbn.lat, nbn.lon, nbn.time);
+			counter++;
+			String s = String.format("%n%d. Checkin: %s%n Lat: %s%n Lon: %s%n Time: %s%n", counter, nbn.checkin, nbn.lat, nbn.lon, nbn.time);
 			System.out.println(s);
-			System.out.println(" Near by nodes:");
+			System.out.println(" Near by node(s):");
 			for(String node: nbn.nodeList) {
 				System.out.println("  " + node);
 			}
@@ -263,7 +494,7 @@ public class MobiSosCore {
 		if(since != 0L) sinceCond = "?time >= " + since;
 		if(since != 0L) untilCond = "?time <= " + until;
 		if(since != 0L && until != 0L) andCond = " && ";
-		if(since != 0L || until != 0L) filter = " FILTER (" + sinceCond + andCond + untilCond + ")";
+		if(since != 0L || until != 0L) filter = "FILTER (" + sinceCond + andCond + untilCond + ")";
 		
 		String qs1 = StrUtils.strjoinNL("SELECT ?lat ?lon ?checkin ?time", "WHERE",			
 				"{",
@@ -288,23 +519,38 @@ public class MobiSosCore {
 		
 		// First, query for check-ins	
 		dataset.begin(ReadWrite.READ);
-		long startTime = System.nanoTime();
+		long startTime = 0L;
+		long finishTime = 0L;
+		double q1Time = 0.0;
+		double q2Time = 0.0;
+		double totalQueryTime = 0.0;
+		int checkinCount = 0;
+		int nearbyNodeCount = 0;
 		Query q1 = null;
 		QueryExecution qexec1 = null;
 		Query q2 = null;
-		QueryExecution qexec2 = null;	
+		QueryExecution qexec2 = null;
 	
 		try {
 			
-			qs1 = QUERY_PREFIX_MAIN + System.lineSeparator() + qs1;
+			qs1 = QUERY_PREFIX_MAIN + System.lineSeparator() + qs1;			
+			//System.out.println(System.lineSeparator() + qs1);
 			
-			System.out.println(System.lineSeparator() + qs1);
+			log.info(String.format("START Check-in Query"));
+			startTime = System.nanoTime();
 			
 			q1 = QueryFactory.create(qs1);
 			qexec1 = QueryExecutionFactory.create(q1, dataset);
 		    ResultSet chkResults = qexec1.execSelect();
+		    
+			finishTime = System.nanoTime();
+			q1Time = (finishTime - startTime) / 1.0e6;
+			log.info(String.format("FINISH Check-in Query - %.2fms", q1Time));
 
 			for (; chkResults.hasNext();) {
+				
+				checkinCount++;
+				
 				QuerySolution chkSoln = chkResults.nextSolution();
 				Literal lati = chkSoln.getLiteral("lat"); // Get a result variable by name.
 				Literal longi = chkSoln.getLiteral("lon");
@@ -322,34 +568,73 @@ public class MobiSosCore {
 				if(meridian180WithinDistance) boolConj = "||"; 
 
 				// Second, for each checkin-lat-long, query for nodes within circle!
+				
 				String qs2 = StrUtils.strjoinNL("SELECT DISTINCT ?node ?lat ?lon", "WHERE", "{", 
 							"?node <%s> ?bn ;",
 							"a <%s> .",
 							"?bn <%s> ?lat .",
 							"?bn <%s> ?lon .",
 							"FILTER ( (?lat >= %s && ?lat <= %s ) && (?lon >= %s %s ?lon <= %s) )",
-							"}");
-				
+							"}",
+							"LIMIT %s");
+							
 				qs2 = String.format(qs2,
 						PROP_GEO_LOC.getURI(),
 						RES_NODE.getURI(),
 						PROP_LAT.getURI(),
 						PROP_LON.getURI(),
 						boundingCoordinates[0].getLatitudeInRadians(), boundingCoordinates[1].getLatitudeInRadians(), 
+						boundingCoordinates[0].getLongitudeInRadians(), boolConj, boundingCoordinates[1].getLongitudeInRadians(),
+						NODE_RESULT_N
+						);
+				
+				/*
+				String qs2 = StrUtils.strjoinNL("SELECT DISTINCT ?node ?lat ?lon IF(COUNT(?servIdx) > 0) AS ?hasTrackServ", "WHERE", "{", 
+						"?node <%s> ?bn ;",
+						"a <%s> .",
+						"?bn <%s> ?lat .",
+						"?bn <%s> ?lon .",
+						"OPTIONAL { ?node <%s> ?serv . }", // a node may/may not have a service
+						"OPTIONAL { ?serv ?servIdx <%s> . }", // if there is a service, it must be of a specific type
+						"FILTER ( (?lat >= %s && ?lat <= %s ) && (?lon >= %s %s ?lon <= %s) )",
+						"}");				
+				// if a node has more than one tracking service, only one will be selected here
+				// does distinct also apply to ?lat ?lon ?
+				
+				qs2 = String.format(qs2,
+						PROP_GEO_LOC.getURI(),
+						RES_NODE.getURI(),
+						PROP_LAT.getURI(),
+						PROP_LON.getURI(),
+						PROP_HAS_SERV.getURI(),
+						//RES_TRACK_SERV.getURI(),
+						RES_VDO_SERV.getURI(),
+						boundingCoordinates[0].getLatitudeInRadians(), boundingCoordinates[1].getLatitudeInRadians(), 
 						boundingCoordinates[0].getLongitudeInRadians(), boolConj, boundingCoordinates[1].getLongitudeInRadians()
 						);
+						*/
 
 				qs2 = QUERY_PREFIX_MAIN + System.lineSeparator() + qs2;
-				System.out.println(System.lineSeparator() + qs2);
+				//System.out.println(System.lineSeparator() + qs2);
 
+				log.info(String.format("START Node Query for: %s", checkin.getURI()));
+				startTime = System.nanoTime();
+				
 				q2 = QueryFactory.create(qs2);
-
 				qexec2 = QueryExecutionFactory.create(q2, dataset);
 				ResultSet nodeResults = qexec2.execSelect();
+				
+				finishTime = System.nanoTime();
+				q2Time = (finishTime - startTime) / 1.0e6;
+				totalQueryTime = q1Time + q2Time;
+				log.info(String.format("FINISH Node Query - %.2fms", q2Time));
+				log.info(String.format("Total Query Time - %.2fms", totalQueryTime));
+				
 				//QueryExecUtils.executeQuery(q2, qexec2);
 				List<String> nodeList = new ArrayList<String>();
 
 				for (; nodeResults.hasNext();) {
+					
 					QuerySolution nodeSoln = nodeResults.nextSolution();
 					Resource node = nodeSoln.getResource("node");
 					Literal nodeLat = nodeSoln.getLiteral("lat"); // Get a result variable by name.
@@ -357,21 +642,28 @@ public class MobiSosCore {
 					
 					GeoLocation nodeLoc = GeoLocation.fromRadians(nodeLat.getDouble(), nodeLon.getDouble());
 					
-					// filter out the out of ring node
-					double disparity = GeoLocation.haversine(loc, nodeLoc);
-					
-					if(disparity <= distance) {
-						System.out.println(node.toString());
+					// filter out the out of ring node					
+					if(GeoLocation.haversine(loc, nodeLoc) <= distance) {
+						
+						nearbyNodeCount++;
+						
+						//System.out.println(node.toString());
 						// add each node to array list
 						nodeList.add(node.toString());
 					}
 
 				} // end each node withinCircle for
 				
-				// add all nodes within circle to the result 
-				nbnList.add(new NearByNodeResult(checkin.getURI(), lati.getDouble(), longi.getDouble(), time.getLong(), nodeList));
+				// add all nodes within circle to the result
+				//if(nodeList.size() > 0)
+					nbnList.add(new NearByNodeResult(checkin.getURI(), lati.getDouble(), longi.getDouble(), time.getLong(), nodeList, q1Time, q2Time, totalQueryTime));
 
 			} // end each check-in for
+			
+			log.info("Summary:");
+			log.info("Check-in result# " + checkinCount);
+			log.info("Nearby Node result# " + nearbyNodeCount);
+			
 		    
 		} finally {
 			if(qexec1 != null) qexec1.close();
@@ -379,12 +671,91 @@ public class MobiSosCore {
 			dataset.end();
 		}
 		
+		return nbnList;
+	}
+	
+	public ArrayList<Checkin> getCheckin(String uuid, long since, long until) {
+		
+		ArrayList<Checkin> checkins = new ArrayList<Checkin>();
+		
+		String sinceCond = "";
+		String untilCond = "";
+		String andCond = "";
+		String filter = "";
+		if(since != 0L) sinceCond = "?time >= " + since;
+		if(since != 0L) untilCond = "?time <= " + until;
+		if(since != 0L && until != 0L) andCond = " && ";
+		if(since != 0L || until != 0L) filter = "FILTER (" + sinceCond + andCond + untilCond + ")";
+		
+		String qs1 = StrUtils.strjoinNL("SELECT ?checkin ?lat ?lon ?time", "WHERE",			
+				"{",
+				"<%s.%s> <%s> ?seq .",
+				"?seq ?ord ?checkin .",
+				"?checkin <%s> ?bn .",
+				"?checkin <%s> ?time .",
+				"?bn <%s> ?lat .",
+				"?bn <%s> ?lon .",
+				filter,
+				"}", 
+				"ORDER BY DESC(?time)"
+				);					
+		
+		qs1 = String.format(qs1,
+				RES_USER.getURI(), uuid, PROP_HAS_CHECKIN.getURI(),
+				PROP_GEO_LOC.getURI(),
+				PROP_TIMESTAMP.getURI(),
+				PROP_LAT.getURI(),
+				PROP_LON.getURI()
+		   		);
+		
+		// First, query for check-ins	
+		dataset.begin(ReadWrite.READ);
+		long startTime = System.nanoTime();
+		Query q = null;
+		QueryExecution qexec = null;		
+		
+		try {
+			
+			qs1 = QUERY_PREFIX_MAIN + System.lineSeparator() + qs1;
+			
+			log.info(System.lineSeparator() + qs1);
+			
+			q = QueryFactory.create(qs1);
+			qexec = QueryExecutionFactory.create(q, dataset);
+		    ResultSet chkResults = qexec.execSelect();
+		    
+		    //log.info(ResultSetFormatter.asText(chkResults));
+
+			for (; chkResults.hasNext();) {
+				QuerySolution chkSoln = chkResults.nextSolution();				
+				Resource checkin = chkSoln.getResource("checkin");
+				Literal lati = chkSoln.getLiteral("lat");
+				Literal longi = chkSoln.getLiteral("lon");
+				Literal time = chkSoln.getLiteral("time");
+
+				checkins.add(new Checkin(checkin.getURI(), GeoLocation.fromRadians(lati.getDouble(), longi.getDouble()), time.getLong()));
+	
+			}
+		} finally {
+			if(qexec != null) qexec.close();
+			dataset.end();
+		}
+		
 		long finishTime = System.nanoTime();
 		double time = (finishTime - startTime) / 1.0e6;
 		log.info(String.format("FINISH - %.2fms", time));
 		
-		return nbnList;
+		return checkins;
+
 	}
+	
+	public String getCheckinJson(String uuid, long since, long until) {
+		Collection<Checkin> checkins = getCheckin(uuid, since, until);
+		String json = gson.toJson(checkins);
+		log.info(json);
+		return json;
+	}
+	
 	
 	public void generateMashup() {
 		// TODO map with tracking update in real-time, video always connect, latest status/info summary, archive log, near by user 
@@ -395,10 +766,40 @@ public class MobiSosCore {
 		return UUID.randomUUID().toString();
 	}
 	
-	private void checkInGps(String uid, String udid, String location) {
-		// TODO checkinGPS
+	/**
+	 * generate 48-bit MAC address
+	 * @param semicolon whether or not output MAC address is separated by ':' for each byte
+	 * @return
+	 */
+	private static String generateMacAddress(boolean semicolon) {		
+		int[] i = { (int)(Math.random() * 256), (int)(Math.random() * 256), (int)(Math.random() * 256), (int)(Math.random() * 256), (int)(Math.random() * 256), (int)(Math.random() * 256) };
+		String macAddr;
+		if(semicolon == true) macAddr = String.format("%02X:%02X:%02X:%02X:%02X:%02X", i[0], i[1], i[2], i[3], i[4], i[5]);
+		else macAddr = String.format("%02X%02X%02X%02X%02X%02X", i[0], i[1], i[2], i[3], i[4], i[5]);
+		return macAddr;
 	}
-
+	
+	/**
+	 * check-in
+	 * @param uuid
+	 * @param location
+	 * @throws Exception
+	 */
+	private void checkin(String uuid, String location) throws Exception {
+		GeoLocation geoLoc = GeoLocation.fromTitaLoc(gson.fromJson(location, TitaniumLocation.class));		
+		checkin(uuid, geoLoc);
+	}
+	
+	/**
+	 * check-in
+	 * @param uuid
+	 * @param location
+	 * @throws Exception
+	 */
+	private void checkin(String uuid, GeoLocation location) throws Exception {
+		checkinWifi(uuid, location, null);
+	}
+	
 	/**
 	 * This method is expected to be called from a mobile client to do self check-in
 	 * since Wifi router doesn't know about uid 
@@ -411,7 +812,17 @@ public class MobiSosCore {
 	 * @param macAddr router's MAC address (BSSID) in Hexadecimal without ':'
 	 * @throws Exception 
 	 */
-	public void checkInWifi(String uuid, String location, String macAddr) throws Exception {		
+	public void checkinWifi(String uuid, String location, String macAddr) throws Exception {
+		// Extract location's parameters from JSON
+		GeoLocation geoLoc = GeoLocation.fromTitaLoc(gson.fromJson(location, TitaniumLocation.class));
+		// IMP should we get location name from wifi check-in in the future? -- see reverse geocoding in Titanium API
+		checkin(uuid, geoLoc);
+		checkinWifi(uuid, geoLoc, macAddr);
+	}
+
+	public void checkinWifi(String uuid, GeoLocation location, String macAddr) throws Exception {	
+		
+		// TODO if no location provided, infer location from Wifi!
 
 		// This either create or connect to existing dataset		
 		dataset.begin(ReadWrite.WRITE);
@@ -419,7 +830,8 @@ public class MobiSosCore {
 		
 		// Jena createResource() will also get existing resource if already available
 		// Note: ordered index is not used/generated here due to possible racing condition
-		// which could break the true order of event, rather we rely on SEQ collection order	
+		// which could break the true order of event, rather we rely on SEQ collection order
+		// meaning that Seq.add() must be Synchronous operation
 		
 		Resource user = model.createResource(RES_USER.getURI() + "." + uuid);
 		
@@ -436,21 +848,16 @@ public class MobiSosCore {
 		// Get check-in records (SEQ) of the user
 		Seq chkRecords = user.getProperty(PROP_HAS_CHECKIN).getSeq(); 
 		if(chkRecords == null) throw new RuntimeException("Possibly Data Error! This user still has no check-in record yet!");
-
-		// Extract location's parameters from JSON
-		//GeoLocation geoLoc = new GeoLocation(gson.fromJson(location, TitaniumLocation.class));
-		GeoLocation geoLoc = GeoLocation.fromTitaLoc(gson.fromJson(location, TitaniumLocation.class));
-		// IMP can we get location name from wifi check-in in the future?
-		
-		// This will also create this wifi resource if not available before (Wardriving like)
-		Resource wifi = createWifiResource(model, macAddr, geoLoc);
-				
+						
 		Resource checkin = model.createResource(RES_CHK.getURI() + "." + generateUUID())
-				.addProperty(PROP_VIA, wifi)
 				.addLiteral(PROP_TIMESTAMP, System.currentTimeMillis())
-				// IMP change to XSD date-time? but probably will lose precision of millisecond?				
-				//.addLiteral(XSD.dateTime, ) 
-				.addProperty(PROP_GEO_LOC, createLocBnode(model, geoLoc));
+				.addProperty(PROP_GEO_LOC, createLocBnode(model, location));
+		
+		if(macAddr != null) {
+			// This will also create this wifi resource if not available before (Wardriving like)
+			Resource wifi = createWifiResource(model, macAddr, location);			
+			checkin.addProperty(PROP_VIA, wifi);
+		}
 		
 		chkRecords.add(checkin);		
 		
@@ -466,35 +873,44 @@ public class MobiSosCore {
 	 * Caution! This method must be called within a WRITE transaction. 
 	 * @param model
 	 * @param macAddr
+	 * @param hasTrackingService
 	 * @return Resource of wifi router
 	 */
-	private Resource createWifiResource(Model model, String macAddr, GeoLocation geoLoc) {
+	private Resource createWifiResource(Model model, String macAddr, GeoLocation geoLoc, boolean hasTrackingService) {
 		
 		Resource wifi = model.createResource(RES_WIFI.getURI() + "." + macAddr);
 		// check if this wifi router is already registered
 		if(model.contains(wifi, PROP_MAC_ADDR, macAddr)) {			
 			// if exists, just update wifi location as needed
-			Statement lastUpdateStm = wifi.getProperty(PROP_LAST_UPDATE);	
-			
-			if(lastUpdateStm.getLong() < System.currentTimeMillis()) {
-				lastUpdateStm.changeLiteralObject(System.currentTimeMillis());
-				// remove old statements about location and add new one				
-				model.remove(model.listStatements(
-						new SimpleSelector(wifi.getProperty(PROP_GEO_LOC).getResource(), null, (RDFNode) null)
-				));
-				model.remove(wifi.getProperty(PROP_GEO_LOC));
-				wifi.addProperty(PROP_GEO_LOC, createLocBnode(model, geoLoc));
-				//.addProperty(PROP_SSID, ssid)
-			}
-			
-		} else {
+			updateWifiLocation(model, wifi, macAddr, geoLoc);
+
+		} else { // new wifi found, create triples for it
 			wifi.addProperty(PROP_MAC_ADDR, macAddr)
 			.addProperty(PROP_GEO_LOC, createLocBnode(model, geoLoc))
 			.addProperty(RDF.type, RES_NODE)
 			//.addProperty(PROP_SSID, ssid)
-			.addLiteral(PROP_LAST_UPDATE, System.currentTimeMillis());			
+			.addLiteral(PROP_LAST_UPDATE, System.currentTimeMillis());
+
+			// some Wifi can provide people tracking service
+			if(hasTrackingService == true) {
+				Bag serviceBag = model.createBag(RES_SERV_LIST.getURI() + ".wifi." + macAddr);
+				serviceBag.add(RES_TRACK_SERV);				
+				wifi.addProperty(PROP_HAS_SERV, serviceBag);
+			}
 		}
 		return wifi;
+	}
+	
+	/**
+	 * Create a new Wifi resource or return existing one if already available in DB
+	 * IMP will include ssid in the future
+	 * Caution! This method must be called within a WRITE transaction. 
+	 * @param model
+	 * @param macAddr
+	 * @return Resource of wifi router
+	 */	
+	private Resource createWifiResource(Model model, String macAddr, GeoLocation geoLoc) {
+		return createWifiResource(model, macAddr, geoLoc, false);
 	}
 	
 	/**
@@ -523,18 +939,141 @@ public class MobiSosCore {
 	 * @param macAddr Router's MAC address (BSSID) to get mapped location in Hexadecimal without ':'
 	 */
 	public void trackWifiUser(String devUUID, String macAddr) {
-		// TODO this is for when we have access to router fw
+		// TODO this is for when we have access to router firmware
 		// update TDB for current user location at this wifi router
 	}
 	
 	/**
-	 * Map router's Mac Address (BSSID) with a geographical location
-	 * @param macAddr Router's MAC address (BSSID) to get mapped location
-	 * @param location the most updated location from the router itself (if no change leave blank or null)
+	 * updateWifiLocation (Crowd-sourcing)
+	 * This method will modify the wifi object.
+	 * Caution! This method must be called within a WRITE transaction. 
+	 * Also must already checked that this wifi resource is already in the model.
+	 * @param model
+	 * @param wifi
+	 * @param macAddr
+	 * @param geoLoc
 	 */
-	public void updateWifiLocation(String macAddr, String location) {
+	private void updateWifiLocation(Model model, Resource wifi, String macAddr, GeoLocation geoLoc) {
+		
+		Statement lastUpdateStm = wifi.getProperty(PROP_LAST_UPDATE);	
+		
+		// IMP check accuracy of the check-in, update by averaging with past data but given more weight to more accurate data
+		if(lastUpdateStm.getLong() < System.currentTimeMillis()) { // this check is still need in case network condition may cause older update to come later
+			lastUpdateStm.changeLiteralObject(System.currentTimeMillis());			
+			// remove old statements about location and add new one	
+			model.remove(model.listStatements(
+					new SimpleSelector(wifi.getProperty(PROP_GEO_LOC).getResource(), null, (RDFNode) null)
+			));
+			model.remove(wifi.getProperty(PROP_GEO_LOC));
+			wifi.addProperty(PROP_GEO_LOC, createLocBnode(model, geoLoc));
+			//.addProperty(PROP_SSID, ssid)
+		}
 		
 	}
+	
+	public void checkinTag(String uuid, String ucode) throws Exception {		
+
+		// This either create or connect to existing dataset		
+		dataset.begin(ReadWrite.WRITE);
+		model = dataset.getDefaultModel();
+		
+		Resource user = model.createResource(RES_USER.getURI() + "." + uuid);
+		
+		// IMP Should only allow authorized user to check-in, not just existing user
+		if(!model.contains(user, PROP_UUID, uuid)) {
+			log.warn("The Tag Check-In is attemped by non-existing user!");
+			System.out.println("Tag Check-in Security Trapped!");
+			model.close();
+			dataset.abort();
+			dataset.end();			
+			throw new Exception("Non-Authorized Tag Check-In");
+		}
+		
+		// Get check-in records (SEQ) of the user
+		Seq chkRecords = user.getProperty(PROP_HAS_CHECKIN).getSeq(); 
+		if(chkRecords == null) throw new RuntimeException("Possibly Data Error! This user still has no check-in record yet!");
+
+		// TODO Get tag's geographic coordinates from uid server
+		// ...
+		double uLat = 0.0;
+		double uLon = 0.0;
+		GeoLocation geoLoc = GeoLocation.fromDegrees(uLat, uLon);
+		
+		// Get the tag if it already available in the model, or create new one
+		Resource tag = createTagResource(model, ucode, geoLoc);
+				
+		Resource checkin = model.createResource(RES_CHK.getURI() + "." + generateUUID())
+				.addProperty(PROP_VIA, tag)
+				.addLiteral(PROP_TIMESTAMP, System.currentTimeMillis()) 
+				.addProperty(PROP_GEO_LOC, createLocBnode(model, geoLoc));
+		
+		chkRecords.add(checkin);	
+		
+		model.close();
+		dataset.commit();
+		dataset.end();		
+		
+		
+	}
+		
+	private Resource createTagResource(Model model, String ucode, GeoLocation geoLoc) {
+		
+		Resource tag = model.createResource(RES_UC_TAG.getURI() + "." + ucode, RES_NODE);		
+		
+		if(model.contains(tag, PROP_UCODE, ucode)) {			
+			// if exists, compare old coordinate, update if it is changed
+			Resource locBnode = tag.getProperty(PROP_GEO_LOC).getResource();
+			double oldLat = locBnode.getProperty(PROP_LAT).getDouble();
+			double oldLon = locBnode.getProperty(PROP_LON).getDouble();
+			if( oldLat != geoLoc.getLatitudeInRadians() || oldLon != geoLoc.getLatitudeInRadians() ) {
+				updateTagLocation(tag, geoLoc);
+			}
+
+		} else { // new tag found, create triples for it
+			tag.addProperty(PROP_UCODE, ucode)
+			.addProperty(PROP_GEO_LOC, createLocBnode(model, geoLoc))
+			.addLiteral(PROP_LAST_UPDATE, System.currentTimeMillis());
+		}
+		return tag;		
+	}
+	
+	private void updateTagLocation(Resource tag, GeoLocation geoLoc) {
+		Resource locBnode = tag.getProperty(PROP_GEO_LOC).getResource();
+		locBnode.getProperty(PROP_LAT).changeLiteralObject(geoLoc.getLatitudeInRadians());
+		locBnode.getProperty(PROP_LON).changeLiteralObject(geoLoc.getLongitudeInRadians());
+	}
+	
+	private Resource createCameraResource(Model model, String udid, GeoLocation geoLoc) {
+		
+		Resource cam = model.createResource(RES_CAMERA.getURI() + "." + udid, RES_NODE);
+		
+		if(model.contains(cam, PROP_GEO_LOC)) {	
+			if(geoLoc != null) {
+				Resource locBnode = cam.getProperty(PROP_GEO_LOC).getResource();
+				double oldLat = locBnode.getProperty(PROP_LAT).getDouble();
+				double oldLon = locBnode.getProperty(PROP_LON).getDouble();		
+				if( oldLat != geoLoc.getLatitudeInRadians() || oldLon != geoLoc.getLatitudeInRadians() ) {
+					updateCamLocation(cam, geoLoc);
+				}				
+			}			
+		} else {			
+			Bag serviceBag = model.createBag(RES_SERV_LIST.getURI() + ".cam." + udid);
+			serviceBag.add(RES_VDO_SERV);
+			
+			cam.addProperty(PROP_GEO_LOC, createLocBnode(model, geoLoc))
+			.addProperty(PROP_HAS_SERV, serviceBag)
+			.addLiteral(PROP_LAST_UPDATE, System.currentTimeMillis());
+		}
+		
+		return cam;
+	}	
+	
+	private void updateCamLocation(Resource cam, GeoLocation geoLoc) {
+		Resource locBnode = cam.getProperty(PROP_GEO_LOC).getResource();
+		locBnode.getProperty(PROP_LAT).changeLiteralObject(geoLoc.getLatitudeInRadians());
+		locBnode.getProperty(PROP_LON).changeLiteralObject(geoLoc.getLongitudeInRadians());		
+	}
+	
 	
 	public boolean changeMode() {
 		// FIXME
@@ -552,7 +1091,7 @@ public class MobiSosCore {
 	 * 
 	 * IMP At the moment, having Class for a model is not a good idea.
 	 * Because the model structure, in other word graph, could change at 
-	 * any time with introduction of new RDF node.    
+	 * any time with an introduction of new RDF node.    
 	 * 
 	 * @param email
 	 * @param passwd
@@ -681,7 +1220,7 @@ public class MobiSosCore {
 	private static void deleteOldFiles(File indexDir) {
 		if (indexDir.exists())
 			emptyAndDeleteDirectory(indexDir);
-	}    
+	}
 	
 	/**
 	 * emptyAndDeleteDirectory
@@ -743,13 +1282,36 @@ public class MobiSosCore {
 		long finishTime = System.nanoTime();
 		double time = (finishTime - startTime) / 1.0e6;
 		log.info(String.format("Finish loading - %.2fms", time));
-	}	
-		
+	}
+	
+	public void exportModelToFile(String filename, String format) {
+		dataset.begin(ReadWrite.READ);
+		model = dataset.getDefaultModel();
+
+		String fileName = filename;
+		FileWriter out = null;
+		try {
+			out = new FileWriter(fileName);
+			model.write(out, format);
+		} catch (IOException e) {
+			e.printStackTrace();
+		} finally {
+			model.close();
+			dataset.commit();
+			dataset.end();
+			try {
+				out.close();
+			} catch (IOException closeException) {
+				closeException.printStackTrace();
+			}
+		}
+	}
+
 	public void addSamples() {
 		
 		// Init TDB (even if when already done before)				
 		dataset.begin(ReadWrite.WRITE);
-		model = dataset.getDefaultModel();	
+		model = dataset.getDefaultModel();
 				
 		//model = ModelFactory.createDefaultModel();
 		Resource r = model.createResource(URI_BASE + "tokyo");
@@ -767,7 +1329,6 @@ public class MobiSosCore {
 		dataset.end();
 	
 	}
-	
-	
+
 
 }
