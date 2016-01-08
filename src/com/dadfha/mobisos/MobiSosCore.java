@@ -119,7 +119,8 @@ public class MobiSosCore {
 	}
 	static Logger log = LoggerFactory.getLogger("MobiSosCoreLogger");	
 	
-	private static final String FUSEKI_HOME_PATH = "/Users/Wirawit/dev/jena-fuseki-1.0.0";
+	//private static final String FUSEKI_HOME_PATH = "/Users/Wirawit/dev/jena-fuseki-1.0.0";
+	private static final String FUSEKI_HOME_PATH = System.getenv("FUSEKI_HOME");
 	// TODO Upgrade to Fuseki 2.x for Security support, Admin UI, and etc. 
 	//private static final String FUSEKI_HOME_PATH = "/Users/Wirawit/dev/apache-jena-fuseki-2.3.1";
 	private static final String TDB_PATH = FUSEKI_HOME_PATH + "/MobiSosTDB";
